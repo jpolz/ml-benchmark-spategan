@@ -1,0 +1,9 @@
+*.nc
+*.pt
+**/models/
+**/__pycache__/
+**/models/
+**/CORDEXBench/
+**/.ipynb_checkpoints/
+!format_predictions/templates/*.nc
+format_predictions/generate_templates.py
