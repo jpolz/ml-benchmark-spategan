@@ -7,13 +7,13 @@ import xarray as xr
 
 from numpy import fft
 
-def _filter_by_season(data: xr.Dataset, season: str | None) -> xr.Dataset:
+def _filter_by_season(x: xr.Dataset, season: str | None) -> xr.Dataset:
     """
     Filter the dataset by season label.
 
     Parameters
     ----------
-    data : xr.Dataset
+    x : xr.Dataset
         Dataset to filter.
     season : str | None
         Season name (winter, summer, spring, autumn) or None to skip filtering.
@@ -24,16 +24,16 @@ def _filter_by_season(data: xr.Dataset, season: str | None) -> xr.Dataset:
         Filtered dataset.
     """
     if season is None:
-        return data
+        return x
     if season == "winter":
-        return data.where(data["time.season"] == "DJF", drop=True)
+        return x.where(x["time.season"] == "DJF", drop=True)
     if season == "summer":
-        return data.where(data["time.season"] == "JJA", drop=True)
+        return x.where(x["time.season"] == "JJA", drop=True)
     if season == "spring":
-        return data.where(data["time.season"] == "MAM", drop=True)
+        return x.where(x["time.season"] == "MAM", drop=True)
     if season == "autumn":
-        return data.where(data["time.season"] == "SON", drop=True)
-    return data
+        return x.where(x["time.season"] == "SON", drop=True)
+    return x
 
 def _radial_average(array_2d: np.ndarray) -> np.ndarray:
     """
@@ -57,21 +57,21 @@ def _radial_average(array_2d: np.ndarray) -> np.ndarray:
     return tbin / np.maximum(nr, 1)
 
 def bias_index( 
-    target: xr.Dataset,
-    pred: xr.Dataset,
+    x0: xr.Dataset,
+    x1: xr.Dataset,
     index_fn: Callable[..., xr.DataArray],
     season: str | None = None,
     relative: bool = False,
     **index_kwargs: Any,
 ) -> xr.Dataset:
     """
-    Compute the bias between target and prediction for a supplied index function.
+    Compute the bias between x0 and x1 for a supplied index function.
 
     Parameters
     ----------
-    target : xr.Dataset
+    x0 : xr.Dataset
         Ground truth dataset.
-    pred : xr.Dataset
+    x1 : xr.Dataset
         Predicted dataset.
     index_fn : Callable[..., xr.DataArray]
         Function computing the desired index.
@@ -91,30 +91,30 @@ def bias_index(
     if season is not None and "season" not in call_kwargs:
         call_kwargs["season"] = season
 
-    target_index = index_fn(target, **call_kwargs)
-    pred_index = index_fn(pred, **call_kwargs)
-    bias = pred_index - target_index
+    x0_index = index_fn(x0, **call_kwargs)
+    x1_index = index_fn(x1, **call_kwargs)
+    bias = x1_index - x0_index
 
     if relative:
-        return bias / target_index
+        return bias / x0_index
     else:
         return bias
 
 def ratio_index(
-    target: xr.Dataset,
-    pred: xr.Dataset,
+    x0: xr.Dataset,
+    x1: xr.Dataset,
     index_fn: Callable[..., xr.DataArray],
     season: str | None = None,
     **index_kwargs: Any,
 ) -> xr.Dataset:
     """
-    Compute the ratio between prediction and target for a supplied index function.
+    Compute the ratio between x1 and x0 for a supplied index function.
 
     Parameters
     ----------
-    target : xr.Dataset
+    x0 : xr.Dataset
         Ground truth dataset.
-    pred : xr.Dataset
+    x1 : xr.Dataset
         Predicted dataset.
     index_fn : Callable[..., xr.DataArray]
         Function computing the desired index.
@@ -126,34 +126,34 @@ def ratio_index(
     Returns
     -------
     xr.Dataset
-        Ratio of the selected index (pred / target).
+        Ratio of the selected index (x1 / x0).
     """
     call_kwargs = dict(index_kwargs)
     if season is not None and "season" not in call_kwargs:
         call_kwargs["season"] = season
 
-    target_index = index_fn(target, **call_kwargs)
-    pred_index = index_fn(pred, **call_kwargs)
-    ratio = pred_index / target_index
+    x0_index = index_fn(x0, **call_kwargs)
+    x1_index = index_fn(x1, **call_kwargs)
+    ratio = x1_index / x0_index
     return ratio
 
 
 def bias_multivariable_correlation(
-    target: xr.Dataset,
-    pred: xr.Dataset,
+    x0: xr.Dataset,
+    x1: xr.Dataset,
     var_x: str,
     var_y: str,
     season: str | None = None,
 ) -> xr.Dataset:
     """
-    Compute correlations between two variables for target and prediction datasets
+    Compute correlations between two variables for x0 and x1 datasets
     and return the correlation bias.
 
     Parameters
     ----------
-    target : xr.Dataset
+    x0 : xr.Dataset
         Ground truth dataset containing ``var_x`` and ``var_y``.
-    pred : xr.Dataset
+    x1 : xr.Dataset
         Predicted dataset containing ``var_x`` and ``var_y``.
     var_x : str
         Name of the first variable used in the correlation computation.
@@ -165,42 +165,42 @@ def bias_multivariable_correlation(
     Returns
     -------
     xr.Dataset
-        Dataset containing the target correlation, prediction correlation, signed
+        Dataset containing the x0 correlation, x1 correlation, signed
         correlation difference, and the requested correlation bias.
     """
 
-    target_filtered = _filter_by_season(target, season)
-    pred_filtered = _filter_by_season(pred, season)
+    x0_filtered = _filter_by_season(x0, season)
+    x1_filtered = _filter_by_season(x1, season)
 
-    target_corr = xr.corr(target_filtered[var_x], target_filtered[var_y], dim='time')
-    pred_corr = xr.corr(pred_filtered[var_x], pred_filtered[var_y], dim='time')
+    x0_corr = xr.corr(x0_filtered[var_x], x0_filtered[var_y], dim='time')
+    x1_corr = xr.corr(x1_filtered[var_x], x1_filtered[var_y], dim='time')
 
-    correlation_bias = pred_corr - target_corr
+    correlation_bias = x1_corr - x0_corr
 
     return xr.Dataset(
         {
-            "correlation_target": target_corr,
-            "correlation_pred": pred_corr,
+            "correlation_x0": x0_corr,
+            "correlation_x1": x1_corr,
             "correlation_bias": correlation_bias,
         }
     )
 
 
 def rmse( 
-    target: xr.Dataset,
-    pred: xr.Dataset,
+    x0: xr.Dataset,
+    x1: xr.Dataset,
     var: str,
     season: str | None = None,
     dim: str | None = None,
 ) -> xr.Dataset:
     """
-    Compute the root mean square error between target and prediction datasets.
+    Compute the root mean square error between x0 and x1 datasets.
 
     Parameters
     ----------
-    target : xr.Dataset
+    x0 : xr.Dataset
         Ground truth dataset.
-    pred : xr.Dataset
+    x1 : xr.Dataset
         Predicted dataset.
     var : str
         Variable name to analyse.
@@ -212,15 +212,15 @@ def rmse(
     Returns
     -------
     xr.Dataset
-        Root mean square error between target and prediction.
+        Root mean square error between x0 and x1.
     """
-    target = _filter_by_season(target, season)
-    pred = _filter_by_season(pred, season)
+    x0 = _filter_by_season(x0, season)
+    x1 = _filter_by_season(x1, season)
 
-    target_da = target[[var]]
-    pred_da = pred[[var]]
+    x0_da = x0[[var]]
+    x1_da = x1[[var]]
 
-    squared_diff = (pred_da - target_da) ** 2
+    squared_diff = (x1_da - x0_da) ** 2
 
     if dim is None:
         mse = squared_diff.mean()
@@ -232,19 +232,19 @@ def rmse(
     return rmse_result
 
 def psd(
-    target: xr.Dataset,
-    pred: xr.Dataset,
+    x0: xr.Dataset,
+    x1: xr.Dataset,
     var: str,
     season: str | None = None,
 ):
     """
-    Compute the power spectral density for target and prediction datasets.
+    Compute the power spectral density for x0 and x1 datasets.
 
     Parameters
     ----------
-    target : xr.Dataset
+    x0 : xr.Dataset
         Ground truth dataset.
-    pred : xr.Dataset
+    x1 : xr.Dataset
         Predicted dataset.
     var : str
         Variable name to analyse.
@@ -254,30 +254,30 @@ def psd(
     Returns
     -------
     tuple[xr.Dataset, xr.Dataset]
-        Power spectral densities for target and prediction.
+        Power spectral densities for x0 and x1.
     """
-    target = _filter_by_season(target, season)
-    pred = _filter_by_season(pred, season)
+    x0 = _filter_by_season(x0, season)
+    x1 = _filter_by_season(x1, season)
 
-    target_da = target[var]
-    pred_da = pred[var]
+    x0_da = x0[var]
+    x1_da = x1[var]
 
-    target_np = np.nan_to_num(target_da.values, nan=0.0)
-    pred_np = np.nan_to_num(pred_da.values, nan=0.0)
+    x0_np = np.nan_to_num(x0_da.values, nan=0.0)
+    x1_np = np.nan_to_num(x1_da.values, nan=0.0)
 
-    fft_target = fft.fftshift(fft.fft2(target_np, axes=(-2, -1)), axes=(-2, -1))
-    fft_pred = fft.fftshift(fft.fft2(pred_np, axes=(-2, -1)), axes=(-2, -1))
+    fft_x0 = fft.fftshift(fft.fft2(x0_np, axes=(-2, -1)), axes=(-2, -1))
+    fft_x1 = fft.fftshift(fft.fft2(x1_np, axes=(-2, -1)), axes=(-2, -1))
 
-    power_target = np.abs(fft_target) ** 2
-    power_pred = np.abs(fft_pred) ** 2
+    power_x0 = np.abs(fft_x0) ** 2
+    power_x1 = np.abs(fft_x1) ** 2
 
-    psd_target_list = [_radial_average(p) for p in power_target]
-    psd_pred_list = [_radial_average(p) for p in power_pred]
+    psd_x0_list = [_radial_average(p) for p in power_x0]
+    psd_x1_list = [_radial_average(p) for p in power_x1]
 
-    avg_psd_target = np.mean(psd_target_list, axis=0)
-    avg_psd_pred = np.mean(psd_pred_list, axis=0)
+    avg_psd_x0 = np.mean(psd_x0_list, axis=0)
+    avg_psd_x1 = np.mean(psd_x1_list, axis=0)
 
-    psd_target_da = xr.DataArray(avg_psd_target, dims=["wavenumber"], name="PSD_target")
-    psd_pred_da = xr.DataArray(avg_psd_pred, dims=["wavenumber"], name="PSD_pred")
+    psd_x0_da = xr.DataArray(avg_psd_x0, dims=["wavenumber"], name="PSD_x0")
+    psd_x1_da = xr.DataArray(avg_psd_x1, dims=["wavenumber"], name="PSD_x1")
 
-    return psd_target_da, psd_pred_da
+    return psd_x0_da, psd_x1_da
