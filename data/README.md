@@ -6,10 +6,10 @@ The CORDEX ML-Bench dataset spans three geographic domains:
 
 New Zealand (NZ) – 0.11° resolution &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 Europe (ALPS) – 0.11° resolution &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-South Africa (SA?) - ???° resolution
+South Africa (SA?) - 0.10° resolution
 ![NZ Domain](https://github.com/jgonzalezab/CORDEX-ML-BENCH/blob/main/images/image_example_NZ.png) 
 ![ALPS Domain](https://github.com/jgonzalezab/CORDEX-ML-BENCH/blob/main/images/image_example_ALPS.png)
-![SA Domain]()
+![SA Domain](https://github.com/jgonzalezab/CORDEX-ML-BENCH/blob/main/images/image_example_SA.png)
 
 Each region includes structured training and testing data derived from dynamically downscaled Global Climate Models (GCMs), allowing systematic evaluation in both historical and future climates.
 
