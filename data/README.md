@@ -4,12 +4,21 @@ The CORDEX ML-Bench dataset is publicly available at [Zenodo](https://zenodo.org
 
 The CORDEX ML-Bench dataset spans three geographic domains:
 
-New Zealand (NZ) – 0.11° resolution &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-Europe (ALPS) – 0.11° resolution &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-South Africa (SA?) - 0.10° resolution
-![NZ Domain](https://github.com/jgonzalezab/CORDEX-ML-BENCH/blob/main/images/image_example_NZ.png) 
-![ALPS Domain](https://github.com/jgonzalezab/CORDEX-ML-BENCH/blob/main/images/image_example_ALPS.png)
-![SA Domain](https://github.com/jgonzalezab/CORDEX-ML-BENCH/blob/main/images/image_example_SA.png)
+<div align="center">
+
+### New Zealand (NZ) – 0.11° resolution  
+<img src="https://github.com/WCRP-CORDEX/ml-benchmark/blob/main/images/image_example_NZ.png" alt="NZ Domain" width="300"/>
+<br><br>
+
+### Europe (ALPS) – 0.11° resolution  
+<img src="https://github.com/WCRP-CORDEX/ml-benchmark/blob/main/images/image_example_ALPS.png" alt="ALPS Domain" width="300"/>
+<br><br>
+
+### South Africa (SA) – 0.10° resolution  
+<img src="https://github.com/WCRP-CORDEX/ml-benchmark/blob/main/images/image_example_SA.png" alt="SA Domain" width="300"/>
+<br><br>
+<br><br>
+</div>
 
 Each region includes structured training and testing data derived from dynamically downscaled Global Climate Models (GCMs), allowing systematic evaluation in both historical and future climates.
 
