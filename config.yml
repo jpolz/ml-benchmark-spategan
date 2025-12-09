@@ -1,7 +1,11 @@
 # Data configuration
 data:
-  region: "SA"
-  experiment: "temperature-no_orography"
+  domain: "SA"
+  training_experiment: "ESD_pseudo_reality"
+  data_path: "/bg/fast/aihydromet/cordexbench/"
+  var_target: "tasmax"
+  normalization: "standard"
+  num_workers: 4
 
 # Training configuration
 training:

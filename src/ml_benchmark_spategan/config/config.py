@@ -5,10 +5,54 @@ import string
 from datetime import datetime
 
 import yaml
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 # Initialize logger
 logger = logging.getLogger(__name__)
+
+
+class Config:
+    """
+    Wrapper class for OmegaConf configuration with convenient methods.
+    """
+
+    def __init__(self, config: DictConfig, config_path: str = None):
+        self._config = config
+        self._config_path = config_path
+
+    def __getattr__(self, name):
+        """Delegate attribute access to the underlying OmegaConf object."""
+        if name.startswith("_"):
+            return object.__getattribute__(self, name)
+        return getattr(self._config, name)
+
+    def __setattr__(self, name, value):
+        """Delegate attribute setting to the underlying OmegaConf object."""
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._config, name, value)
+
+    def save(self):
+        """
+        Save configuration to a YAML file.
+
+        Args:
+            file_path: Path to save the config. Required to prevent accidental overwrites.
+        """
+        save_config_to_yaml(self._config, self._config.config_path)
+        logger.info(f"Configuration saved to: {self._config.config_path}")
+
+    def to_dict(self):
+        """Convert configuration to a regular Python dictionary."""
+        return OmegaConf.to_container(self._config, resolve=True)
+
+    def to_yaml(self):
+        """Convert configuration to YAML string."""
+        return OmegaConf.to_yaml(self._config)
+
+    def __repr__(self):
+        return f"Config({OmegaConf.to_yaml(self._config)})"
 
 
 def generate_run_id(length=8):
@@ -37,15 +81,18 @@ def setup_logging(config: dict = None):
     )
 
 
-def load_config_from_yaml(file_path: str) -> dict:
+def load_config_from_yaml(file_path: str) -> Config:
     """
     Load configuration parameters from a YAML file. Convert to omega config.
+
+    Returns:
+        Config: A Config object wrapping the OmegaConf configuration.
     """
     with open(file_path, "r") as file:
-        config = yaml.safe_load(file)
-    config = OmegaConf.create(config)
-    setup_logging(config)
-    return config
+        config_dict = yaml.safe_load(file)
+    omega_config = OmegaConf.create(config_dict)
+    setup_logging(omega_config)
+    return Config(omega_config, file_path)
 
 
 def save_config_to_yaml(config: dict, file_path: str):
@@ -70,29 +117,35 @@ def setup_experiment_directory(base_dir: str, run_id: str) -> str:
     return experiment_dir
 
 
-def print_config(config: dict):
+def print_config(config):
     """
     Log the configuration in a readable format.
     """
-    logger.info("Configuration:\n" + OmegaConf.to_yaml(config))
+    if isinstance(config, Config):
+        logger.info("Configuration:\n" + config.to_yaml())
+    else:
+        logger.info("Configuration:\n" + OmegaConf.to_yaml(config))
 
 
-def set_up_run(project_base: str) -> str:
+def set_up_run(project_base: str) -> Config:
     """
     Set up the run directory and save the configuration.
+
+    Returns:
+        Config: The configuration object with run_id and run_dir added.
     """
     cf = load_config_from_yaml(os.path.join(project_base, "config.yml"))
     print_config(cf)
     run_id = generate_run_id()
     logger.info(f"Run ID: {run_id}")
     # add run_id to the config
-    cf.run_id = run_id
+    cf.logging.run_id = run_id
     run_dir = setup_experiment_directory(project_base, run_id)
     # add run_dir to the config
-    cf.run_dir = run_dir
+    cf.logging.run_dir = run_dir
     # Save the configuration to the run directory
-    config_path = os.path.join(run_dir, "config.yaml")
-    save_config_to_yaml(cf, config_path)
+    cf.config_path = os.path.join(run_dir, "config.yaml")
+    cf.save()
 
     logger.info(f"Run directory set up at: {run_dir}")
 
