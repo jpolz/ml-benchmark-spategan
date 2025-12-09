@@ -176,27 +176,34 @@ class Generator(nn.Module):
     def forward(self, x: torch.Tensor, dropout_seed: int = None) -> torch.Tensor:
         if dropout_seed is None:
             dropout_seed = self.dropout_seed
+            
+        # 16x16
         x1 = self.res1(x)
         x1 = CustomDropout(p=self.dropout_ratio, d_seed=dropout_seed)(x1)
         x2_stay = self.res2(x1)
         # x2_stay = x1
 
+        # 8x8
         x2 = self.down0(x2_stay)
         x2 = self.res3b(x2)
         x2 = CustomDropout(p=self.dropout_ratio, d_seed=dropout_seed)(x2)
+        # 16x16
         x2 = self.upu1(x2)
 
         x2 = x2_stay + x2
         x2 = self.res3(x2)
         x2 = CustomDropout(p=self.dropout_ratio, d_seed=dropout_seed)(x2)
 
+        # 32x32
         x2 = self.up0(x2)
         x2 = self.res4(x2)
 
+        # 64x64
         x2 = self.up1(x2)
         x2 = self.res5(x2)
         x2 = CustomDropout(p=self.dropout_ratio, d_seed=dropout_seed)(x2)
 
+        # 128x128
         x2 = self.up4(x2)
         x2 = self.res8(x2)
         x2 = self.res9(x2)
@@ -295,11 +302,14 @@ class Discriminator(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x, y):
-        noisex = torch.randn(x.size()).cuda() * 0.05
-        noisey = torch.randn(y.size()).cuda() * 0.05
-
-        x = x + noisex
-        y = y + noisey
+        
+        # add small random (0-0.05) gaussian noise to discriminator input
+        sigma_x = torch.rand(x.size(0), 1, 1, 1, device=x.device) * 0.05
+        sigma_y = torch.rand(y.size(0), 1, 1, 1, device=y.device) * 0.05
+        
+        x = x + torch.randn_like(x) * sigma_x
+        y = y + torch.randn_like(y) * sigma_y
+        
 
         x1 = self.conv1(x)
         x2 = self.conv2(x1)
@@ -317,11 +327,25 @@ class Discriminator(nn.Module):
         out = self.output_conv(xy)
 
         return out
-
+    
+    
+# move to utils
+def add_noise_channel(x):
+    """
+    Adds one Gaussian noise channel to a BCHW tensor.
+    x: (batch, C, H, W)
+    returns: (batch, C+1, H, W)
+    """
+    noise = torch.randn(
+        x.size(0), 1, x.size(2), x.size(3),
+        device=x.device, dtype=x.dtype
+    )
+    return torch.cat([x, noise], dim=1)
 
 def train_gan_step(
     config,
     input_image,
+    input_image_hr,
     target,
     step,
     discriminator,
@@ -330,6 +354,7 @@ def train_gan_step(
     disc_opt,
     scaler,
     criterion,
+    timesteps,
 ):
     generator.train()
     discriminator.train()
@@ -344,7 +369,15 @@ def train_gan_step(
 
         ## generate multiple ensemble prediction-
         # Generator outputs flattened predictions, reshape to 2D
-        gen_outputs = [generator(input_image).view(-1, 1, 128, 128) for _ in range(3)]
+        match config.model.architecture:
+            case "spategan":
+                gen_outputs = [generator(input_image).view(-1, 1, 128, 128) for _ in range(3)]
+            case "diffusion_unet":
+                gen_outputs = [generator(add_noise_channel(input_image_hr) , timesteps).sample.view(-1, 1, 128, 128) for _ in range(3)]
+            case _:
+                raise ValueError(f"Invalid option: {config.model.architecture}")
+
+
         gen_ensemble = torch.cat(gen_outputs, dim=1)
         pred_log = gen_ensemble[:, 0:1]
 
@@ -356,9 +389,17 @@ def train_gan_step(
         # Classify all fake batch with D
         disc_fake_output = discriminator(pred_log, input_image)
 
-        gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
+        # BCE Loss:
+        # gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
+        
+        # Hinge Loss:
+        gen_gan_loss = -torch.mean(disc_fake_output)
+        
         l1loss = nn.L1Loss()(gen_ensemble, target)
         loss = l1loss + gen_gan_loss
+        
+        
+        
 
     scaler.scale(loss).backward()
     # Gradient Norm Clipping
@@ -379,13 +420,22 @@ def train_gan_step(
     with amp.autocast("cuda"):
         # discriminator prediction
         disc_real_output = discriminator(target, input_image)
-        disc_real = criterion(disc_real_output, torch.ones_like(disc_real_output))
-
+        
+        # label smoothing not needed for hinge loss.
+        real_labels = (0.8 + 0.2 * torch.rand_like(disc_real_output))
+        
+        # BCE loss real:
+        disc_real = criterion(disc_real_output, real_labels)
+        # disc_real = criterion(disc_real_output, torch.ones_like(disc_real_output))
+        
+    
         # Classify all fake batch with D
         disc_fake_output = discriminator(pred_log, input_image)
 
-        # Calculate D's loss on the all-fake batch
+        # Calculate D's loss on the all-fake batch BCE:
         disc_fake = criterion(disc_fake_output, torch.zeros_like(disc_fake_output))
+        
+      
 
     # Calculate the gradients for this batch, accumulated (summed) with previous gradients
     scaler.scale(disc_fake + disc_real).backward()
@@ -404,4 +454,4 @@ if __name__ == "__main__":
     from torchinfo import summary
 
     model = Generator().to(device)
-    summary(model, input_size=(1, 15, 16, 16))
+    # summary(model, input_size=(1, 15, 16, 16))

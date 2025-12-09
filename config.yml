@@ -4,7 +4,7 @@ data:
   training_experiment: "ESD_pseudo_reality"
   data_path: "/bg/fast/aihydromet/cordexbench/"
   var_target: "tasmax"
-  normalization: "standard"
+  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1'
   num_workers: 4
 
 # Training configuration
@@ -20,7 +20,7 @@ training:
 
 # Model configuration
 model:
-  architecture: "spagan"
+  architecture: "diffusion_unet" # "spagan"
   filter_size: 96
   n_input_channels: 15
   n_output_channels: 1
@@ -38,5 +38,5 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 10 # number of epochs between checkpoints
-  map_frequency: 5 # number of epochs between plotting maps
+  checkpoint_frequency: 20 # number of epochs between checkpoints
+  map_frequency: 1 # number of epochs between plotting maps
