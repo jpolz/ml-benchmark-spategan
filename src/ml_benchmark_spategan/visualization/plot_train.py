@@ -7,5 +7,5 @@ def plot_losses(loss_train, loss_test, cf):
     axs.legend()
     axs.set_yscale('log')
     axs.grid(True)
-    plt.savefig(cf.logging.run_dir / "plots/losses.png", dpi=150)
+    plt.savefig(cf.logging.run_dir + "/losses.png", dpi=150)
     plt.close()
