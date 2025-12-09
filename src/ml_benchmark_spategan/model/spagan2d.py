@@ -2,8 +2,8 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 from torch import amp
+from torch.nn import functional as F
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -40,9 +40,7 @@ class ResidualBlock2D(nn.Module):
         self.use_layer_norm = use_layer_norm
         self.padding_type = padding_type
 
-        self.padding_layer = (
-            nn.ReflectionPad2d((1, 1, 1, 1)) if padding_type else None
-        )
+        self.padding_layer = nn.ReflectionPad2d((1, 1, 1, 1)) if padding_type else None
 
         self.conv1 = nn.Conv2d(
             in_channels,
@@ -137,13 +135,15 @@ class Generator(nn.Module):
     def _initialize_layers(self):
         f = self.filter_size
 
-        self.res1 = ResidualBlock2D(self.n_input_channels, f, use_layer_norm=False, padding_type=True)
+        self.res1 = ResidualBlock2D(
+            self.n_input_channels, f, use_layer_norm=False, padding_type=True
+        )
         self.res2 = ResidualBlock2D(f, f, use_layer_norm=False, padding_type=True)
         self.res3 = ResidualBlock2D(f, f, use_layer_norm=True, padding_type=True)
 
         self.down0 = nn.Sequential(
             nn.ReflectionPad2d((1, 1, 1, 1)),
-            nn.Conv2d(f, f, kernel_size=(3, 3), stride=(2,2), padding=0),
+            nn.Conv2d(f, f, kernel_size=(3, 3), stride=(2, 2), padding=0),
             nn.ReLU(inplace=True),
         )
 
@@ -205,7 +205,6 @@ class Generator(nn.Module):
         output = torch.flatten(output, start_dim=1)
         # output = self.linout(output)
 
-
         # Avoid in-place operation to prevent gradient computation error
         # output = output[:, 0, :, :]
         # output_constrained[:, :, :, 32:-32, 32:-32] = self.constraint_layer(
@@ -216,136 +215,189 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super(Discriminator, self).__init__()
         self.apply(self._init_weights)
-        
+        self.n_coarse_channels = (
+            config.model.n_input_channels
+        )  # number of low resolution channels
+        self.n_fine_channels = (
+            config.model.n_output_channels
+        )  # number of high resolution channels
         self.int_reflection = nn.ReflectionPad3d((1, 1, 1, 1, 0, 0))
 
         # HIGH RESOLUTION layers:
-        self.conv1 = ResidualBlock2D(1, 128, use_layer_norm=False, stride=(1,1), )
-        self.conv2 = ResidualBlock2D(128, 128, use_layer_norm=True, stride=(2,2),)
-        self.conv3 = ResidualBlock2D(128, 128, use_layer_norm=True, stride=(2,2), )
-        self.conv4 = ResidualBlock2D(128, 64, use_layer_norm=True, stride=(3,3), )
-        self.conv5 = ResidualBlock2D(128, 64, use_layer_norm=True, stride=(2,2), )
-        
-        
+        self.conv1 = ResidualBlock2D(
+            self.n_fine_channels,
+            128,
+            use_layer_norm=False,
+            stride=(1, 1),
+        )
+        self.conv2 = ResidualBlock2D(
+            128,
+            128,
+            use_layer_norm=True,
+            stride=(2, 2),
+        )
+        self.conv3 = ResidualBlock2D(
+            128,
+            128,
+            use_layer_norm=True,
+            stride=(2, 2),
+        )
+        self.conv4 = ResidualBlock2D(
+            128,
+            64,
+            use_layer_norm=True,
+            stride=(2, 2),
+        )
+        self.conv5 = ResidualBlock2D(
+            64,
+            64,
+            use_layer_norm=True,
+            stride=(2, 2),
+        )
+        # self.conv6 = ResidualBlock2D(128, 64, use_layer_norm=True, stride=(2,2), )
+
         # LOW RESOLUTION layers
-        self.conv1_1 = ResidualBlock2D(2, 64, use_layer_norm=False, stride=(1,1),)
-        self.conv1_2 = ResidualBlock2D(64, 32, use_layer_norm=False, stride=(2,2),)
-        
-        self.conv_combined = ResidualBlock2D(96, 64, use_layer_norm=True, stride=(2,2),)
+        self.conv1_1 = ResidualBlock2D(
+            self.n_coarse_channels,
+            64,
+            use_layer_norm=False,
+            stride=(1, 1),
+        )
+        self.conv1_2 = ResidualBlock2D(
+            64,
+            32,
+            use_layer_norm=False,
+            stride=(2, 2),
+        )
+
+        self.conv_combined = ResidualBlock2D(
+            96,
+            64,
+            use_layer_norm=True,
+            stride=(2, 2),
+        )
 
         # Output convolution
         self.output_conv = nn.Sequential(nn.Conv2d(64, 1, kernel_size=3, padding=1))
-        
 
     def _init_weights(self, m):
-        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv3d):
-            nn.init.trunc_normal_(m.weight, std=.02)
+        if (
+            isinstance(m, nn.Linear)
+            or isinstance(m, nn.Conv2d)
+            or isinstance(m, nn.Conv3d)
+        ):
+            nn.init.trunc_normal_(m.weight, std=0.02)
             # nn.init.normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    
-
     def forward(self, x, y):
-        
-        y = y[:,[0,2]]
-        #y = self.int_reflection(y)
-        
         noisex = torch.randn(x.size()).cuda() * 0.05
         noisey = torch.randn(y.size()).cuda() * 0.05
-        
-        
+
         x = x + noisex
         y = y + noisey
-        
-        
+
         x1 = self.conv1(x)
         x2 = self.conv2(x1)
         x3 = self.conv3(x2)
         x4 = self.conv4(x3)
-        
+        x4 = self.conv5(x4)
+
         x11 = self.conv1_1(y)
         x12 = self.conv1_2(x11)
-        
+
         xy = torch.cat((x4, x12), dim=1)
-        
+
         xy = self.conv_combined(xy)
-        
+
         out = self.output_conv(xy)
-        
+
         return out
 
-def train_gan_step(config, input_image, target, step, discriminator, generator, gen_opt, disc_opt, scaler, criterion):
+
+def train_gan_step(
+    config,
+    input_image,
+    target,
+    step,
+    discriminator,
+    generator,
+    gen_opt,
+    disc_opt,
+    scaler,
+    criterion,
+):
     generator.train()
     discriminator.train()
 
     gen_opt.zero_grad(set_to_none=True)
-    
-    # mixed precission
-    with amp.autocast():
 
+    # mixed precission
+    with amp.autocast("cuda"):
         ##################
         ### Generator: ###
         ##################
-        
+
         ## generate multiple ensemble prediction-
-        gen_ensemble = torch.cat([generator(input_image) for _ in range(3)], dim=1)
-        pred_log = gen_ensemble[:,0:1]
+        # Generator outputs flattened predictions, reshape to 2D
+        gen_outputs = [generator(input_image).view(-1, 1, 128, 128) for _ in range(3)]
+        gen_ensemble = torch.cat(gen_outputs, dim=1)
+        pred_log = gen_ensemble[:, 0:1]
 
         # calculate ensemble mean
-        gen_ensemble = (gen_ensemble[:,0:1] + gen_ensemble[:,1:2]  + gen_ensemble[:,2:3]) / 3
-                
+        gen_ensemble = (
+            gen_ensemble[:, 0:1] + gen_ensemble[:, 1:2] + gen_ensemble[:, 2:3]
+        ) / 3
 
-         # Classify all fake batch with D
-        disc_fake_output = discriminator(pred_log[:, 0:1], input_image)
-        
+        # Classify all fake batch with D
+        disc_fake_output = discriminator(pred_log, input_image)
+
         gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
         l1loss = nn.L1Loss()(gen_ensemble, target)
-        loss = (l1loss  + gen_gan_loss)
+        loss = l1loss + gen_gan_loss
 
     scaler.scale(loss).backward()
     # Gradient Norm Clipping
-    #nn.utils.clip_grad_norm_(generator.parameters(), max_norm=2.0, norm_type=2)
-    
+    # nn.utils.clip_grad_norm_(generator.parameters(), max_norm=2.0, norm_type=2)
+
     scaler.step(gen_opt)
     scaler.update()
-    # Unscale gradients to prevent underflow - 
-    #scaler.unscale_(gen_opt)
- 
+    # Unscale gradients to prevent underflow -
+    # scaler.unscale_(gen_opt)
+
     ####################
     ## Discriminator: ##
     ####################
     disc_opt.zero_grad(set_to_none=True)
-    
-    pred_log = pred_log[:, 0:1].detach()
-    
-    with amp.autocast():
 
+    pred_log = pred_log.detach()
+
+    with amp.autocast("cuda"):
         # discriminator prediction
         disc_real_output = discriminator(target, input_image)
         disc_real = criterion(disc_real_output, torch.ones_like(disc_real_output))
 
-
         # Classify all fake batch with D
-        disc_fake_output = discriminator(pred_log, input_image) 
-        
+        disc_fake_output = discriminator(pred_log, input_image)
+
         # Calculate D's loss on the all-fake batch
         disc_fake = criterion(disc_fake_output, torch.zeros_like(disc_fake_output))
 
     # Calculate the gradients for this batch, accumulated (summed) with previous gradients
     scaler.scale(disc_fake + disc_real).backward()
-    
+
     # Gradient Norm Clipping
-    #nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=2.0, norm_type=2)
+    # nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=2.0, norm_type=2)
     scaler.step(disc_opt)
     scaler.update()
     # Unscale gradients to prevent underflow - dont know if really necessary
-    #scaler.unscale_(gen_opt)
-    
+    # scaler.unscale_(gen_opt)
 
+    return loss.item(), (disc_fake + disc_real).item()
 
 
 if __name__ == "__main__":

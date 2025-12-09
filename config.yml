@@ -10,7 +10,7 @@ data:
 # Training configuration
 training:
   batch_size: 32
-  epochs: 20
+  epochs: 40
   learning_rate: 0.0001
   optimizer: "AdamW"
   scheduler: null
@@ -21,7 +21,7 @@ training:
 # Model configuration
 model:
   architecture: "spagan"
-  filter_size: 32
+  filter_size: 96
   n_input_channels: 15
   n_output_channels: 1
   dropout_seed: 42
@@ -30,12 +30,13 @@ model:
 # Evaluation configuration
 evaluation:
   metrics: ["rmse"]
-  plot_results: true
   output_dir: "results"
 
 # Logging configuration
 logging:
   level: "INFO"
   log_dir: "logs"
-  wandb: false
-  save_frequency: 1
+  wandb: false # not implemented
+  log_frequency: 1 # number of epochs between loss plots
+  checkpoint_frequency: 10 # number of epochs between checkpoints
+  map_frequency: 5 # number of epochs between plotting maps
