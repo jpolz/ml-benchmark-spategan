@@ -43,18 +43,23 @@ def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, cf):
     plt.close()
 
 
-def plot_predictions(generator, x_batch, y_batch, cf, epoch, num_samples=3):
+def plot_predictions(generator, x_batch, y_batch, cf, epoch, num_samples=1):
     """
-    Visualize coarse input, true fine-scale target, and predicted fine-scale output.
+    Visualize all 15 coarse input channels, true fine-scale target, and predicted fine-scale output.
     """
     generator.eval()
 
     # Use minimum of requested samples and available samples
     num_samples = min(num_samples, x_batch.shape[0])
 
+    # Select colormap based on target variable
+    cmap = "RdYlBu_r" if cf.data.var_target == "tasmax" else "jet"
+
     with torch.no_grad():
         # Generate predictions
-        y_pred = generator(x_batch[:num_samples])  # Reshape if needed
+        y_pred = generator(x_batch[:num_samples])
+
+        # Reshape if needed
         if y_pred.dim() == 2:  # (batch, H*W)
             y_pred = y_pred.view(-1, 1, 128, 128)
         if y_batch.dim() == 2:  # (batch, H*W)
@@ -65,37 +70,84 @@ def plot_predictions(generator, x_batch, y_batch, cf, epoch, num_samples=3):
         y_true_np = y_batch[:num_samples].cpu().numpy()
         y_pred_np = y_pred.cpu().numpy()
 
-        # Create figure
-        fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5 * num_samples))
-        if num_samples == 1:
-            axes = axes.reshape(1, -1)
+        for sample_idx in range(num_samples):
+            # Create figure with gridspec for custom layout
+            fig = plt.figure(figsize=(20, 12))
+            gs = fig.add_gridspec(
+                5,
+                5,
+                hspace=0.3,
+                wspace=0.3,
+                left=0.05,
+                right=0.75,
+                top=0.95,
+                bottom=0.05,
+            )
 
-        for i in range(num_samples):
-            # Plot coarse input (first channel)
-            im0 = axes[i, 0].imshow(x_np[i, 0], cmap="viridis")
-            axes[i, 0].set_title(f"Sample {i + 1}: Coarse Input (Ch 0)")
-            axes[i, 0].axis("off")
-            plt.colorbar(im0, ax=axes[i, 0], fraction=0.046)
+            # Plot all 15 coarse input channels in a 5x3 grid
+            n_channels = x_np.shape[1]
+            for ch in range(min(15, n_channels)):
+                row = ch // 3
+                col = ch % 3
+                ax = fig.add_subplot(gs[row, col])
+                im = ax.imshow(x_np[sample_idx, ch], cmap="viridis")
+                ax.set_title(f"Coarse Ch {ch}", fontsize=10)
+                ax.axis("off")
+                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-            # Plot true fine-scale
-            im1 = axes[i, 1].imshow(y_true_np[i, 0], cmap="viridis")
-            axes[i, 1].set_title(f"Sample {i + 1}: True Fine-Scale")
-            axes[i, 1].axis("off")
-            plt.colorbar(im1, ax=axes[i, 1], fraction=0.046)
+            # Create larger subplots for high-res images on the right
+            gs_right = fig.add_gridspec(
+                2,
+                1,
+                hspace=0.3,
+                wspace=0.1,
+                left=0.78,
+                right=0.98,
+                top=0.95,
+                bottom=0.05,
+            )
 
-            # Plot predicted fine-scale
-            im2 = axes[i, 2].imshow(y_pred_np[i, 0], cmap="viridis")
-            axes[i, 2].set_title(f"Sample {i + 1}: Predicted Fine-Scale")
-            axes[i, 2].axis("off")
-            plt.colorbar(im2, ax=axes[i, 2], fraction=0.046)
+            # Calculate common vmin/vmax for true and predicted fine-scale images
+            vmin = min(y_true_np[sample_idx, 0].min(), y_pred_np[sample_idx, 0].min())
+            vmax = max(y_true_np[sample_idx, 0].max(), y_pred_np[sample_idx, 0].max())
 
-        plt.suptitle(f"Epoch {epoch}: Predictions", fontsize=16, y=1.0)
-        plt.tight_layout()
-        plt.savefig(
-            f"{cf.logging.run_dir}/predictions_epoch_{epoch}.png",
-            dpi=150,
-            bbox_inches="tight",
-        )
-        plt.show()
+            # Plot true fine-scale (larger)
+            ax_true = fig.add_subplot(gs_right[0])
+            im_true = ax_true.imshow(
+                y_true_np[sample_idx, 0], cmap=cmap, vmin=vmin, vmax=vmax
+            )
+            ax_true.set_title(
+                f"Sample {sample_idx + 1}: True Fine-Scale",
+                fontsize=12,
+                fontweight="bold",
+            )
+            ax_true.axis("off")
+            plt.colorbar(im_true, ax=ax_true, fraction=0.046, pad=0.04)
+
+            # Plot predicted fine-scale (larger)
+            ax_pred = fig.add_subplot(gs_right[1])
+            im_pred = ax_pred.imshow(
+                y_pred_np[sample_idx, 0], cmap=cmap, vmin=vmin, vmax=vmax
+            )
+            ax_pred.set_title(
+                f"Sample {sample_idx + 1}: Predicted Fine-Scale",
+                fontsize=12,
+                fontweight="bold",
+            )
+            ax_pred.axis("off")
+            plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
+
+            plt.suptitle(
+                f"Epoch {epoch} - Sample {sample_idx + 1}",
+                fontsize=16,
+                fontweight="bold",
+            )
+            plt.savefig(
+                f"{cf.logging.run_dir}/predictions_epoch_{epoch}_sample_{sample_idx + 1}.png",
+                dpi=150,
+                bbox_inches="tight",
+            )
+            plt.show()
+            plt.close()
 
     generator.train()
