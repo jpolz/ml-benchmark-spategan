@@ -101,7 +101,7 @@ def build_dataloaders(cf):
             - cf.data.domain: 'ALPS', 'NZ', or 'SA'
             - cf.data.var_target: Target variable ('tasmax' or 'pr')
             - cf.data.data_path: Path to CORDEX benchmark data
-            - cf.data.normalization: 'standardization', 'minmax', 'log', or None
+            - cf.data.normalization: 'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1'
             - cf.data.num_workers: Number of workers for DataLoader
             - cf.training.batch_size: Batch size for training
 
@@ -160,6 +160,27 @@ def build_dataloaders(cf):
         x_test_stand = (x_test - min_train) / (max_train - min_train)
     elif cf.data.normalization == "log":
         raise NotImplementedError("Log normalization not implemented yet")
+    
+    elif cf.data.normalization == "minus1_to_plus1":
+        min_train = x_train.min("time")
+        max_train = x_train.max("time")
+
+        x_train_stand = (x_train - min_train) / (max_train - min_train)
+        x_train_stand = x_train_stand*2 - 1
+        x_test_stand = (x_test - min_train) / (max_train - min_train)
+        x_test_stand = x_test_stand*2 - 1
+        
+        
+        # normalize y as well (?) --> inverse missing
+        y_min_train = y_train.min("time")
+        y_max_train = y_train.max("time")
+        
+        y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
+        y_train = y_train*2 - 1
+        y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
+        y_test = y_test*2 - 1
+        
+        
     else:
         x_train_stand = x_train
         x_test_stand = x_test
