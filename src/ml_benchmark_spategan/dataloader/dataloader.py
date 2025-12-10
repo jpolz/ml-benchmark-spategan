@@ -160,27 +160,25 @@ def build_dataloaders(cf):
         x_test_stand = (x_test - min_train) / (max_train - min_train)
     elif cf.data.normalization == "log":
         raise NotImplementedError("Log normalization not implemented yet")
-    
+
     elif cf.data.normalization == "minus1_to_plus1":
         min_train = x_train.min("time")
         max_train = x_train.max("time")
 
         x_train_stand = (x_train - min_train) / (max_train - min_train)
-        x_train_stand = x_train_stand*2 - 1
+        x_train_stand = x_train_stand * 2 - 1
         x_test_stand = (x_test - min_train) / (max_train - min_train)
-        x_test_stand = x_test_stand*2 - 1
-        
-        
+        x_test_stand = x_test_stand * 2 - 1
+
         # normalize y as well (?) --> inverse missing
         y_min_train = y_train.min("time")
         y_max_train = y_train.max("time")
-        
+
         y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
-        y_train = y_train*2 - 1
+        y_train = y_train * 2 - 1
         y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
-        y_test = y_test*2 - 1
-        
-        
+        y_test = y_test * 2 - 1
+
     else:
         x_train_stand = x_train
         x_test_stand = x_test
@@ -206,10 +204,20 @@ def build_dataloaders(cf):
     dataset_training = EmulationTrainingDataset(
         x_data=x_train_stand_array, y_data=y_train_stack_array
     )
+
+    if cf.training.batches_per_epoch is not None:
+        num_samples = cf.training.batches_per_epoch * cf.training.batch_size
+    else:
+        num_samples = int(len(dataset_training)/cf.training.batch_size)*cf.training.batch_size
+    sampler = torch.utils.data.RandomSampler(
+        dataset_training, 
+        replacement=False,
+        num_samples=num_samples
+    )
     dataloader_train = DataLoader(
         dataset=dataset_training,
         batch_size=cf.training.batch_size,
-        shuffle=True,
+        sampler=sampler,
         num_workers=cf.data.num_workers,
     )
 
@@ -223,7 +231,22 @@ def build_dataloaders(cf):
         num_workers=cf.data.num_workers,
     )
 
-    return dataloader_train, test_dataloader, cf
+    # Store normalization parameters for denormalization
+    norm_params = {
+        "normalization": cf.data.normalization,
+        "spatial_dims": spatial_dims,
+        "y_test_coords": y_test.coords,  # Store original unstacked coords
+        "spatial_shape": (
+            len(y_test[spatial_dims[0]]),
+            len(y_test[spatial_dims[1]]),
+        ),  # (H, W)
+    }
+
+    if cf.data.normalization == "minus1_to_plus1":
+        norm_params["y_min"] = y_min_train
+        norm_params["y_max"] = y_max_train
+
+    return dataloader_train, test_dataloader, cf, norm_params
 
 
 def build_dummy_dataloaders(

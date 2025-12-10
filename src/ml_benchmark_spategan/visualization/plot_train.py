@@ -46,13 +46,78 @@ def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, cf):
     plt.close()
 
 
+def plot_diagnostic_history(diagnostic_history, cf):
+    """
+    Plot diagnostic metrics evolution over training epochs.
+
+    Parameters
+    ----------
+    diagnostic_history : dict
+        Dictionary containing diagnostic metrics with keys:
+        - 'epochs': list of epoch numbers
+        - 'rmse': list of RMSE values
+        - 'bias_mean': list of bias mean values
+    cf : Config
+        Configuration object with logging settings
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Plot RMSE over epochs
+    ax1.plot(
+        diagnostic_history["epochs"],
+        diagnostic_history["rmse"],
+        "o-",
+        linewidth=2,
+        markersize=6,
+    )
+    ax1.set_xlabel("Epoch", fontsize=12)
+    ax1.set_ylabel("RMSE (spatial mean)", fontsize=12)
+    ax1.set_title("RMSE Evolution", fontsize=14, fontweight="bold")
+    ax1.grid(True, alpha=0.3)
+
+    # Plot Bias Mean over epochs
+    ax2.plot(
+        diagnostic_history["epochs"],
+        diagnostic_history["bias_mean"],
+        "o-",
+        linewidth=2,
+        markersize=6,
+        color="orange",
+    )
+    ax2.set_xlabel("Epoch", fontsize=12)
+    ax2.set_ylabel("Bias Mean (spatial mean)", fontsize=12)
+    ax2.set_title("Bias Mean Evolution", fontsize=14, fontweight="bold")
+    ax2.grid(True, alpha=0.3)
+    ax2.axhline(y=0, color="k", linestyle="--", alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(
+        f"{cf.logging.run_dir}/diagnostics_history.png", dpi=150, bbox_inches="tight"
+    )
+    plt.show()
+    plt.close()
+
+
 def plot_predictions(
-    generator, x_batch, y_batch, cf, epoch, device, sample_idx=0, input_cols=5
+    generator,
+    x_batch,
+    y_batch,
+    cf,
+    epoch,
+    device,
+    sample_idx=0,
+    input_cols=5,
+    norm_params=None,
 ):
     """
     Plot a single sample with grid layout:
       - Left: grid of all input channels
       - Right: True (top) and Prediction (bottom) with adjusted colormap and shared vmin/vmax
+
+    Parameters
+    ----------
+    norm_params : dict, optional
+        Normalization parameters for denormalizing predictions before plotting
     """
     generator.eval()
 
@@ -72,6 +137,13 @@ def plot_predictions(
                 y_pred = generator(x, torch.zeros([1]).to(device)).sample
             case _:
                 raise ValueError(f"Invalid option: {cf.model.architecture}")
+
+    # Denormalize if norm_params provided
+    if norm_params is not None:
+        from ml_benchmark_spategan.utils.denormalize import denormalize_predictions
+
+        y = denormalize_predictions(y, norm_params)
+        y_pred = denormalize_predictions(y_pred, norm_params)
 
     # Function to convert flattened images to (B,1,H,W)
     def ensure_image_tensor(t):
