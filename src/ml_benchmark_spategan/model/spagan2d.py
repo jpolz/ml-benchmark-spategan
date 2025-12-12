@@ -431,10 +431,10 @@ def train_gan_step(
             disc_fake_output = discriminator(torch.cat((pred_log, input_image_hr), dim=1))
 
         # BCE Loss:
-        # gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
+        gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
         
         # Hinge Loss:
-        gen_gan_loss = -torch.mean(disc_fake_output)
+        # gen_gan_loss = -torch.mean(disc_fake_output)
         
         l1loss = nn.L1Loss()(gen_ensemble, target)
         loss = loss_weights['l1'] * l1loss + loss_weights['gan'] * gen_gan_loss

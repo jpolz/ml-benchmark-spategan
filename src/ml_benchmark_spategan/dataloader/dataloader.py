@@ -13,8 +13,29 @@ For more details on the CORDEX Benchmark dataset properties, see the data notebo
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import xarray as xr
 from torch.utils.data import DataLoader, Dataset
+
+
+def upscale_nn(x):
+    # x: (15, 16, 16)
+    return F.interpolate(
+        x, 
+        size=(128, 128),
+        mode="bilinear"
+    )
+    
+def add_noise_channel(x):
+    # x: (B, 15, 128, 128)
+    noise = torch.randn(
+        x.size(0),      # batch
+        1,              # 1 noise channel
+        x.size(2),      # height = 128
+        x.size(3),      # width = 128
+        device=x.device # put noise on same device (GPU or CPU)
+    )
+    return torch.cat([x, noise], dim=1)
 
 
 class EmulationTrainingDataset(Dataset):
