@@ -12,6 +12,37 @@ import sys
 sys.path.append('./evaluation')
 import indices, diagnostics
 
+from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
+
+from einops import rearrange
+import torch.nn.functional as F
+
+def denorm(y_pred, y_min, y_max):
+        y_denorm = (y_pred - y_min)/(y_max - y_min)
+        y_denorm = y_denorm*2 - 1
+
+        return y_denorm
+
+def upscale_nn(x):
+    # x: (15, 16, 16)
+    return F.interpolate(
+        x, 
+        size=(128, 128),
+        mode="bilinear"
+    )
+
+    
+def add_noise_channel(x):
+    # x: (B, 15, 128, 128)
+    noise = torch.randn(
+        x.size(0),      # batch
+        1,              # 1 noise channel
+        x.size(2),      # height = 128
+        x.size(3),      # width = 128
+        device=x.device # put noise on same device (GPU or CPU)
+    )
+    return torch.cat([x, noise], dim=1)
+
 def plot_data_map(data, var_name, domain, vmin, vmax,
                   fig_title='', figsize=(8,8), cmap='viridis'):
     
@@ -239,6 +270,14 @@ match cf.model.architecture:
     case _:
         raise ValueError(f"Invalid option: {cf.model.architecture}")
 
+# Load the checkpoint
+checkpoint = torch.load(f'./runs/{run_id}/final_models.pt', map_location=device)
+
+# Load the generator state dict
+generator.load_state_dict(checkpoint['generator_state_dict'])
+generator = generator.to(device)
+generator.eval()
+
 
 ###############
 ### compute ###
@@ -253,22 +292,41 @@ test_dataloader = DataLoader(dataset=dataset_test,
 model.eval()
 
 predictions = []
+predictions_generator = []
 with torch.no_grad():
     for batch_x in test_dataloader:
         batch_x = batch_x.to(next(model.parameters()).device)
         outputs = model(batch_x)
+        x_batch_hr = upscale_nn(batch_x)
+        timesteps = torch.zeros([x_batch_hr.shape[0]]).to(device)
+        outputs_generator = generator(add_noise_channel(x_batch_hr) , timesteps).sample
         predictions.append(outputs.cpu().numpy())
+        predictions_generator.append(outputs_generator.cpu().numpy())
 
 # Concatenate all batches into one array
 predictions = np.concatenate(predictions, axis=0)
+predictions_generator = rearrange(np.concatenate(predictions_generator, axis=0), 'b 1 h w -> b (h w)')
+# Denormalize predictions
+y_min = xr.open_dataarray(f'./runs/{run_id}/ymin.nc')
+y_max = xr.open_dataarray(f'./runs/{run_id}/ymax.nc')
+predictions_generator = denorm(torch.from_numpy(predictions_generator), y_min, y_max).numpy()
+print(f'Predictions shape (DeepESD): {predictions.shape}')
+print(f'Predictions shape (Generator): {predictions_generator.shape}')
 
 y_pred_stack = y_test_stack.copy(deep=True)
 y_pred_stack[var_target].values = predictions
 y_pred = y_pred_stack.unstack()
 
+y_pred_generator_stack = y_test_stack.copy(deep=True)
+y_pred_generator_stack[var_target].values = predictions_generator
+y_pred_generator = y_pred_generator_stack.unstack()
+
 rmse = diagnostics.rmse(x0=y_test, x1=y_pred,
                         var=var_target, dim='time')
-print(f'Mean RMSE: {rmse[var_target].mean().values.item()}')
+rmse_generator = diagnostics.rmse(x0=y_test, x1=y_pred_generator,
+                        var=var_target, dim='time')
+print(f'Mean RMSE (DeepESD): {rmse[var_target].mean().values.item()}')
+print(f'Mean RMSE (Generator): {rmse_generator[var_target].mean().values.item()}')
 
 # plot_data_map(data=rmse, var_name=var_target, domain=domain, vmin=0, vmax=5,
 #               fig_title='RMSE', cmap='Reds')

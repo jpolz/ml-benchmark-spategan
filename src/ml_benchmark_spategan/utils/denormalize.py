@@ -81,9 +81,11 @@ def predictions_to_xarray(y_pred, y_true, norm_params, var_name="tasmax"):
     tuple[xr.Dataset, xr.Dataset]
         Denormalized predictions and ground truth as xarray Datasets
     """
-    # Denormalize
+    # # Denormalize
     y_pred_denorm = denormalize_predictions(y_pred, norm_params)
     y_true_denorm = denormalize_predictions(y_true, norm_params)
+    # y_pred_denorm = y_pred
+    # y_true_denorm = y_true
 
     # Get spatial dimensions info
     spatial_dims = norm_params["spatial_dims"]

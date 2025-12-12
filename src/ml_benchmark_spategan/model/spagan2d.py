@@ -355,7 +355,43 @@ def train_gan_step(
     scaler,
     criterion,
     timesteps,
+    loss_weights={'l1': 1.0, 'gan': 1.0},
+    condition_separate_channels: bool = False,
 ):
+    '''
+    Performs a single training step for the GAN.
+
+    Parameters
+    ----------
+    config : Config
+        Configuration object containing model and training parameters.
+    input_image : torch.Tensor
+        Input tensor to the generator, shape (batch, C, H, W).
+    input_image_hr : torch.Tensor
+        High-resolution input tensor for conditioning the discriminator, shape (batch, C, H, W).
+    target : torch.Tensor
+        Ground truth tensor, shape (batch, 1, H, W).
+    step : int
+        Current training step.
+    discriminator : nn.Module
+        Discriminator model.
+    generator : nn.Module
+        Generator model.
+    gen_opt : torch.optim.Optimizer
+        Optimizer for the generator.
+    disc_opt : torch.optim.Optimizer
+        Optimizer for the discriminator.
+    scaler : torch.cuda.amp.GradScaler
+        Gradient scaler for mixed precision training.
+    criterion : nn.Module
+        Loss function (e.g., BCEWithLogitsLoss).
+    timesteps : torch.Tensor
+        Timesteps for diffusion models, shape (batch,).
+    loss_weights : dict, optional
+        Weights for different loss components, by default {'l1': 1.0, 'gan': 1.0}.
+    condition_separate_channels : bool, optional
+        If True, condition the discriminator with separate channels, by default False.
+    '''
     generator.train()
     discriminator.train()
 
@@ -369,13 +405,13 @@ def train_gan_step(
 
         ## generate multiple ensemble prediction-
         # Generator outputs flattened predictions, reshape to 2D
-        match config.model.architecture:
+        match config.model.generator_architecture:
             case "spategan":
                 gen_outputs = [generator(input_image).view(-1, 1, 128, 128) for _ in range(3)]
             case "diffusion_unet":
                 gen_outputs = [generator(add_noise_channel(input_image_hr) , timesteps).sample.view(-1, 1, 128, 128) for _ in range(3)]
             case _:
-                raise ValueError(f"Invalid option: {config.model.architecture}")
+                raise ValueError(f"Invalid option: {config.model.generator_architecture}")
 
 
         gen_ensemble = torch.cat(gen_outputs, dim=1)
@@ -387,7 +423,12 @@ def train_gan_step(
         ) / 3
 
         # Classify all fake batch with D
-        disc_fake_output = discriminator(pred_log, input_image)
+        if condition_separate_channels:
+            disc_fake_output = discriminator(
+                pred_log, input_image
+            )
+        else:
+            disc_fake_output = discriminator(torch.cat((pred_log, input_image_hr), dim=1))
 
         # BCE Loss:
         # gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
@@ -396,7 +437,7 @@ def train_gan_step(
         gen_gan_loss = -torch.mean(disc_fake_output)
         
         l1loss = nn.L1Loss()(gen_ensemble, target)
-        loss = l1loss + gen_gan_loss
+        loss = loss_weights['l1'] * l1loss + loss_weights['gan'] * gen_gan_loss
         
         
         

@@ -150,3 +150,20 @@ def set_up_run(project_base: str) -> Config:
     logger.info(f"Run directory set up at: {run_dir}")
 
     return cf
+
+
+def save_norm_params(run_dir: str, norm_params: dict):
+    """
+    Save normalization parameters to netcdf.
+
+    Parameters
+    ----------
+    run_dir : str
+        Directory where to save the normalization parameters.
+    norm_params : dict
+        Dictionary containing normalization parameters.
+    """
+    
+    norm_params['y_min'].to_netcdf(os.path.join(run_dir, "ymin.nc"))
+    norm_params['y_max'].to_netcdf(os.path.join(run_dir, "ymax.nc"))
+    

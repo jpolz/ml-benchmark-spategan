@@ -10,17 +10,17 @@ data:
 # Training configuration
 training:
   batch_size: 32
-  epochs: 200
-  batches_per_epoch: 20  # set to null to use all data; otherwise set an integer value
+  epochs: 400
+  batches_per_epoch: 40  # set to null to use all data; otherwise set an integer value
   generator:
-    learning_rate: 0.00005
+    learning_rate: 0.0001
     optimizer: "AdamW"
     scheduler: null
     beta1: 0.0
     beta2: 0.999
     weight_decay: 0.0001
   discriminator:
-    learning_rate: 0.00005
+    learning_rate: 0.0001
     optimizer: "AdamW"
     scheduler: null
     beta1: 0.0
@@ -29,10 +29,14 @@ training:
   early_stopping: true
   patience: 10
   checkpoint_dir: "checkpoints"
+  loss_weights:
+    l1: 1.0
+    gan: 0.1
 
 # Model configuration
 model:
-  architecture: "diffusion_unet" # "spagan"
+  generator_architecture: "diffusion_unet" # "spagan"
+  discriminator_architecture: "spagan" # "unet" or "spagan"
   filter_size: 96
   n_input_channels: 15
   n_output_channels: 1

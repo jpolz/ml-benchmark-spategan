@@ -130,13 +130,13 @@ def plot_predictions(
     y = y_batch[sample_idx : sample_idx + 1]
 
     with torch.no_grad():
-        match cf.model.architecture:
+        match cf.model.generator_architecture:
             case "spategan":
                 y_pred = generator(x)
             case "diffusion_unet":
                 y_pred = generator(x, torch.zeros([1]).to(device)).sample
             case _:
-                raise ValueError(f"Invalid option: {cf.model.architecture}")
+                raise ValueError(f"Invalid option: {cf.model.generator_architecture}")
 
     # Denormalize if norm_params provided
     if norm_params is not None:
