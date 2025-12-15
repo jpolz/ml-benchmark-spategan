@@ -26,6 +26,7 @@ from ml_benchmark_spategan.model.spagan2d import (
     train_gan_step,
 )
 from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
+from ml_benchmark_spategan.utils.losses import FSSLoss
 from ml_benchmark_spategan.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
@@ -76,7 +77,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 match cf.model.generator_architecture:
     case "spategan":
-        logger.info("Using SpaGAN architecture")
+        logger.info("Using spategan architecture")
         # Initialize models
         generator = Generator(cf.model).to(device)
 
@@ -119,7 +120,8 @@ match cf.model.generator_architecture:
             ),
         )
 
-        if cf.model.generator_finalactivation == "softplus":
+        # if predictions are not [-1, 1], change final activation
+        if cf.data.normalization == "m1p1_log_target":
             generator = UNetWithActivation(base_generator, nn.Softplus()).to(device)
         else:  # use linear activation by default
             generator = UNetWithActivation(base_generator, nn.Identity()).to(device)
@@ -158,8 +160,8 @@ if cf.model.discriminator_architecture == "unet":
             )
         )
     )
-elif cf.model.discriminator_architecture == "spagan":
-    logger.info("Using SpaGAN Discriminator")
+elif cf.model.discriminator_architecture == "spategan":
+    logger.info("Using spategan Discriminator")
     discriminator = Discriminator(cf).to(device)
     logger.info("\nDiscriminator architecture:")
     # Note: Discriminator takes (high_res_target, low_res_input)
@@ -175,6 +177,19 @@ generator = generator.to(device)
 
 # Loss function
 criterion = nn.BCEWithLogitsLoss()
+
+# FSS criterion
+fss_criterion = FSSLoss(
+                        thresholds=[0.1, 0.2, 0.4, 0.8, 1.6, 2.4, 4, 6, 10, 25], # not normalized thresholds
+                        scales=[2, 8, 16],
+                        device="cuda",
+                        sharpness=3.0,
+                        batch_size=10,
+                        config=cf,
+                        norm_params=norm_params,
+                                )
+
+   
 
 # Optimizers
 gen_opt = torch.optim.AdamW(
@@ -209,6 +224,7 @@ scaler = torch.amp.GradScaler("cuda")
 loss_gen_train = []
 loss_disc_train = []
 loss_gen_test = []
+loss_fss_test = []
 
 # Store diagnostics
 diagnostic_history = {"rmse": [], "bias_mean": [], "epochs": []}
@@ -237,15 +253,12 @@ for epoch in range(cf.training.epochs):
             x_batch
         )  # move to where it is needed, if needed
         # during training, noise channel is added during train step
-        y_batch = y_batch.to(device)
+        y_batch_2d = y_batch.to(device)
 
         # zero timestep, for diffusion UNET.
         timesteps = torch.zeros([x_batch.shape[0]]).to(
             device
         )  # only for diffusion unet
-
-        # Reshape y_batch to 2D for discriminator
-        y_batch_2d = y_batch.view(-1, 1, 128, 128)
 
         # Train discriminator n_critic times
         n_critic = getattr(cf.training, "n_critic", 1)
@@ -268,6 +281,7 @@ for epoch in range(cf.training.epochs):
                 timesteps=timesteps,
                 loss_weights=cf.training.loss_weights,
                 condition_separate_channels=condition_separate_channels,
+                fss_criterion=fss_criterion,
             )
             disc_losses_batch.append(disc_loss)
 
@@ -287,6 +301,7 @@ for epoch in range(cf.training.epochs):
             timesteps=timesteps,
             loss_weights=cf.training.loss_weights,
             condition_separate_channels=condition_separate_channels,
+            fss_criterion=fss_criterion,
         )
 
         epoch_gen_losses.append(gen_loss)
@@ -301,6 +316,7 @@ for epoch in range(cf.training.epochs):
     # Validation phase
     generator.eval()
     test_losses = []
+    fss_test_losses = []
 
     with torch.no_grad():
         for batch_idx, (x_batch, y_batch) in enumerate(test_dataloader):
@@ -312,8 +328,8 @@ for epoch in range(cf.training.epochs):
             x_batch_hr = dataloader.add_noise_channel(
                 x_batch_hr
             )  # add noise to HR or LR?
-            y_batch = y_batch.to(device)
-
+            y_batch_2d = y_batch.to(device)
+            
             # zero timestep, for diffusion UNET.
             timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
@@ -323,13 +339,19 @@ for epoch in range(cf.training.epochs):
                         y_pred = generator(x_batch)
                     case "diffusion_unet":
                         y_pred = generator(x_batch_hr, timesteps)
-                        y_pred = torch.flatten(y_pred, start_dim=1)
-                loss = nn.L1Loss()(y_pred, y_batch)
+
+                loss = nn.L1Loss()(y_pred, y_batch_2d)
+                
+                fss_test_loss = fss_criterion(y_pred, y_batch_2d)
 
             test_losses.append(loss.item())
+            fss_test_losses.append(fss_test_loss.item())
 
     test_loss = np.mean(test_losses)
     loss_gen_test.append(test_loss)
+    mean_fss_test = np.mean(fss_test_losses)
+    loss_fss_test.append(mean_fss_test)
+    
 
     # Print progress and plot
     if (epoch + 1) % cf.logging.log_frequency == 0 or epoch == 0:
@@ -338,9 +360,10 @@ for epoch in range(cf.training.epochs):
         logger.info(f"  Generator Loss:     {train_gen_loss:.6f}")
         logger.info(f"  Discriminator Loss: {train_disc_loss:.6f}")
         logger.info(f"  Test Loss (L1):     {test_loss:.6f}")
+        logger.info(f"  Test Loss (FSS):     {mean_fss_test:.6f}")
 
         # Plot losses
-        plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, cf)
+        plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf)
 
     # Compute diagnostics
     if (epoch + 1) % cf.logging.diagnostic_frequency == 0:
@@ -351,11 +374,15 @@ for epoch in range(cf.training.epochs):
         all_preds = []
         all_targets = []
 
+
+        # to do change y to 2D
         with torch.no_grad():
             for x_batch, y_batch in test_dataloader:
                 x_batch = x_batch.to(device)
                 x_batch_hr = dataloader.upscale_nn(x_batch)
                 x_batch_hr = dataloader.add_noise_channel(x_batch_hr)
+                
+                y_batch = torch.flatten(y_batch, start_dim=1)
 
                 timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
@@ -363,6 +390,7 @@ for epoch in range(cf.training.epochs):
                     match cf.model.generator_architecture:
                         case "spategan":
                             y_pred = generator(x_batch)
+                            y_pred = torch.flatten(y_pred, start_dim=1)
                         case "diffusion_unet":
                             y_pred = generator(x_batch_hr, timesteps)
                             y_pred = torch.flatten(y_pred, start_dim=1)

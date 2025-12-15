@@ -245,6 +245,38 @@ def build_dataloaders(cf):
         y_train = np.log1p(y_train+1e-6)
         y_test = np.log1p(y_test+1e-6)
 
+    elif cf.data.normalization == "mp1p1_input_m1p1log_target":
+        
+        # x sample normalization
+        min_train = x_train.min("time")
+        max_train = x_train.max("time")
+        
+
+        x_train_stand = (x_train - min_train) / (max_train - min_train)
+        x_train_stand = x_train_stand * 2 - 1
+        x_test_stand = (x_test - min_train) / (max_train - min_train)
+        x_test_stand = x_test_stand * 2 - 1
+
+        # y sample normalization
+        # 1. log transform y
+        y_train = np.log1p(y_train+1e-6) - np.log1p(1e-6)
+        y_test = np.log1p(y_test+1e-6) - np.log1p(1e-6)
+        
+        # 2. min-max to [-1, 1]
+        y_min_train = y_train.min("time")
+        y_max_train = y_train.max("time")
+        
+        y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
+        y_train = y_train * 2 - 1
+        
+        y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
+        y_test = y_test * 2 - 1
+        
+        # to float32
+        y_train = y_train.astype(np.float32)
+        y_test  = y_test.astype(np.float32)
+        
+        
     elif cf.data.normalization == "m1p1_log_target":
         min_train = x_train.min("time")
         max_train = x_train.max("time")
@@ -257,6 +289,8 @@ def build_dataloaders(cf):
         # log transform y
         y_train = np.log1p(y_train+1e-6)
         y_test = np.log1p(y_test+1e-6)
+        
+        
 
     elif cf.data.normalization == "minus1_to_plus1":
         min_train = x_train.min("time")
@@ -306,6 +340,9 @@ def build_dataloaders(cf):
     )
     y_test_stack_array = torch.from_numpy(y_test_stack.to_array()[0, :].values)
 
+    # 2D y_test
+    y_train_stack_array = y_train_stack_array.view(-1, 1, 128, 128)
+
     dataset_training = EmulationTrainingDatasetSpate(
         x_data=x_train_stand_array, 
         y_data=y_train_stack_array, 
@@ -329,6 +366,9 @@ def build_dataloaders(cf):
         sampler=sampler,
         num_workers=cf.data.num_workers,
     )
+
+    # 2D y_test
+    y_test_stack_array = y_test_stack_array.view(-1, 1, 128, 128)
 
     dataset_test = EmulationTrainingDataset(
         x_data=x_test_stand_array, y_data=y_test_stack_array
@@ -354,6 +394,13 @@ def build_dataloaders(cf):
     if cf.data.normalization == "minus1_to_plus1":
         norm_params["y_min"] = y_min_train
         norm_params["y_max"] = y_max_train
+    
+    # store log min and max values:
+    if cf.data.normalization == "mp1p1_input_m1p1log_target":
+        norm_params["y_min"] = y_min_train
+        norm_params["y_max"] = y_max_train
+        
+        
 
     return dataloader_train, test_dataloader, cf, norm_params
 

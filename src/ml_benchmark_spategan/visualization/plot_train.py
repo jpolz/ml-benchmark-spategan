@@ -20,7 +20,7 @@ def plot_losses(loss_train, loss_test, cf):
     plt.close()
 
 
-def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, cf):
+def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf):
     """
     Plot GAN training losses including generator, discriminator, and validation.
     """
@@ -29,7 +29,7 @@ def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, cf):
     # Training losses
     ax1.plot(loss_gen_train, label="Generator")
     ax1.plot(loss_disc_train, label="Discriminator")
-    ax1.set_yscale("log")
+    # ax1.set_yscale("log")
     ax1.legend()
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
@@ -38,6 +38,7 @@ def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, cf):
 
     # Validation loss
     ax2.plot(loss_gen_test, label="Test MSE")
+    ax2.plot(loss_fss_test, label="Test FSS")
     ax2.set_yscale("log")
     ax2.legend()
     ax2.set_xlabel("Epoch")

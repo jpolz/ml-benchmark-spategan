@@ -213,7 +213,7 @@ class Generator(nn.Module):
         x2 = self.res9(x2)
 
         output = self.output_conv(x2)
-        output = torch.flatten(output, start_dim=1)
+        # output = torch.flatten(output, start_dim=1)
         # output = self.linout(output)
 
         # Avoid in-place operation to prevent gradient computation error
@@ -384,6 +384,7 @@ def train_gan_step(
     disc_opt,
     scaler,
     criterion,
+    fss_criterion,
     timesteps,
     loss_weights={"l1": 1.0, "gan": 1.0},
     condition_separate_channels: bool = False,
@@ -415,6 +416,8 @@ def train_gan_step(
         Gradient scaler for mixed precision training.
     criterion : nn.Module
         Loss function (e.g., BCEWithLogitsLoss).
+    fss_criterion:
+        FSS loss function, if used for pixel-wise loss.
     timesteps : torch.Tensor
         Timesteps for diffusion models, shape (batch,).
     loss_weights : dict, optional
@@ -459,7 +462,7 @@ def train_gan_step(
             pred_log = gen_ensemble[:, 0:1]
 
             # calculate ensemble mean
-            gen_ensemble = (
+            gen_ensemble_mean = (
                 gen_ensemble[:, 0:1] + gen_ensemble[:, 1:2] + gen_ensemble[:, 2:3]
             ) / 3
 
@@ -478,9 +481,26 @@ def train_gan_step(
 
             # Hinge Loss:
             # gen_gan_loss = -torch.mean(disc_fake_output)
+            
+            l1loss = nn.L1Loss()(gen_ensemble_mean, target)
+            
+            if config.training.fss_loss == True:
+                fss_loss = fss_criterion(
+                    gen_ensemble, target
+                )
+                loss = (
+                    loss_weights["l1"] * l1loss
+                    + loss_weights["gan"] * gen_gan_loss
+                    + loss_weights["fss"] * fss_loss
+                )
+                
+                # print(f"Step {step}: L1 Loss: {l1loss.item():.4f}, GAN Loss: {gen_gan_loss.item():.4f}, FSS Loss: {fss_loss.item():.4f}")
+                
+            else:
+                loss = loss_weights["l1"] * l1loss + loss_weights["gan"] * gen_gan_loss 
+                
+                # print(f"Step {step}: L1 Loss: {l1loss.item():.4f}, GAN Loss: {gen_gan_loss.item():.4f}")
 
-            l1loss = nn.L1Loss()(gen_ensemble, target)
-            loss = loss_weights["l1"] * l1loss + loss_weights["gan"] * gen_gan_loss
 
         scaler.scale(loss).backward()
         # Gradient Norm Clipping

@@ -54,11 +54,58 @@ def denormalize_predictions(y_pred, norm_params):
 
     elif norm_params["normalization"] is None or norm_params["normalization"] == "none":
         return y_pred
-    elif norm_params["normalization"] == "std_log_target" or norm_params["normalization"] == "m1p1_log_target":
+    
+    
+    elif norm_params["normalization"] == "m1p1_log_target":
         # Reverse: y_norm = log1p(y + 1e-6) = log(y + 1 + 1e-6)
         # So: y = expm1(y_norm) - 1e-6
         y_denorm = torch.expm1(y_pred) - 1e-6
         return y_denorm
+    
+    
+    
+    elif norm_params["normalization"] == "mp1p1_input_m1p1log_target":
+        ############################
+        # from [-1:1] to log1p space
+        ############################
+        y_min = norm_params["y_min"]
+        y_max = norm_params["y_max"]
+        
+        # Convert xarray to numpy if needed
+        if isinstance(y_min, xr.Dataset):
+            y_min = torch.from_numpy(y_min.to_array()[0].values).float()
+            y_max = torch.from_numpy(y_max.to_array()[0].values).float()
+
+        # Move to same device as predictions
+        y_min = y_min.to(y_pred.device)
+        y_max = y_max.to(y_pred.device)
+
+        # Reshape if needed
+        if y_pred.dim() == 2:  # (batch, H*W)
+            y_min_flat = y_min.flatten()
+            y_max_flat = y_max.flatten()
+            y_denorm = ((y_pred + 1) / 2) * (y_max_flat - y_min_flat) + y_min_flat
+        elif y_pred.dim() == 4:  # (batch, 1, H, W)
+            y_min_exp = y_min.unsqueeze(0).unsqueeze(0)
+            y_max_exp = y_max.unsqueeze(0).unsqueeze(0)
+            y_denorm = ((y_pred + 1) / 2) * (y_max_exp - y_min_exp) + y_min_exp
+        else:
+            raise ValueError(f"Unexpected prediction shape: {y_pred.shape}")
+        
+        
+        ############################
+        # from log1p space to original space
+        # Reverse: y_norm = log1p(y + 1e-6) = log(y + 1 + 1e-6)
+        # So: y = expm1(y_norm) - 1e-6
+        y_denorm = torch.expm1(y_denorm + torch.log1p(torch.tensor(1e-6))) - 1e-6
+        
+        return y_denorm
+    
+    elif norm_params["normalization"] == "std_log_target":
+        raise NotImplementedError(
+            f"Denormalization for {norm_params['normalization']} not implemented yet, also check normalization in dataloader!"
+        )
+    
     else:
         # For other normalizations, we'd need to store the parameters in norm_params
         raise NotImplementedError(
