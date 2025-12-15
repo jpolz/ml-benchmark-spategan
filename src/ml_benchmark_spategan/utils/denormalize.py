@@ -54,6 +54,11 @@ def denormalize_predictions(y_pred, norm_params):
 
     elif norm_params["normalization"] is None or norm_params["normalization"] == "none":
         return y_pred
+    elif norm_params["normalization"] == "std_log_target" or norm_params["normalization"] == "m1p1_log_target":
+        # Reverse: y_norm = log1p(y + 1e-6) = log(y + 1 + 1e-6)
+        # So: y = expm1(y_norm) - 1e-6
+        y_denorm = torch.expm1(y_pred) - 1e-6
+        return y_denorm
     else:
         # For other normalizations, we'd need to store the parameters in norm_params
         raise NotImplementedError(

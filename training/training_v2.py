@@ -85,20 +85,45 @@ match cf.model.generator_architecture:
         summary(generator, input_size=(1, 15, 16, 16))
     case "diffusion_unet":
         logger.info("Using Diffusion UNet architecture")
-        generator = UNet2DModel(
+
+        # Wrapper class for adding final activation to UNet2DModel
+        class UNetWithActivation(nn.Module):
+            def __init__(self, base_model, activation):
+                super().__init__()
+                self.model = base_model
+                self.activation = activation
+
+            def forward(self, sample, timestep):
+                output = self.model(sample, timestep).sample
+                return self.activation(output)
+
+        base_generator = UNet2DModel(
             sample_size=(128, 128),
             in_channels=15 + 1,  # +1 == noise
             out_channels=1,
             layers_per_block=2,
-            block_out_channels=(64, 128, 128, 256),
+            block_out_channels=(64, 128, 256, 512, 1024),
             down_block_types=(
                 "DownBlock2D",
                 "DownBlock2D",
                 "DownBlock2D",
                 "AttnDownBlock2D",
+                "AttnDownBlock2D",
             ),
-            up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
-        ).to(device)
+            up_block_types=(
+                "AttnUpBlock2D",
+                "AttnUpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+            ),
+        )
+
+        if cf.model.generator_finalactivation == "softplus":
+            generator = UNetWithActivation(base_generator, nn.Softplus()).to(device)
+        else:  # use linear activation by default
+            generator = UNetWithActivation(base_generator, nn.Identity()).to(device)
+
         logger.info(
             str(
                 summary(
@@ -123,6 +148,7 @@ if cf.model.discriminator_architecture == "unet":
         down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D"),
         up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D"),
     ).to(device)
+    condition_separate_channels = True
     logger.info(
         str(
             summary(
@@ -140,6 +166,7 @@ elif cf.model.discriminator_architecture == "spagan":
     logger.info(
         str(summary(discriminator, input_size=[(1, 1, 128, 128), (1, 15, 16, 16)]))
     )
+    condition_separate_channels = True
 else:
     raise ValueError(f"Invalid option: {cf.model.discriminator_architecture}")
 
@@ -235,7 +262,7 @@ for epoch in range(cf.training.epochs):
             criterion=criterion,
             timesteps=timesteps,
             loss_weights=cf.training.loss_weights,
-            condition_separate_channels=True,
+            condition_separate_channels=condition_separate_channels,
         )
 
         epoch_gen_losses.append(gen_loss)
@@ -252,7 +279,7 @@ for epoch in range(cf.training.epochs):
     test_losses = []
 
     with torch.no_grad():
-        for x_batch, y_batch in test_dataloader:
+        for x_batch, y_batch in test_dataloader[:cf.training.batches_per_validation]:
             x_batch = x_batch.to(device)
             x_batch_hr = dataloader.upscale_nn(x_batch)
             x_batch_hr = dataloader.add_noise_channel(
@@ -268,7 +295,7 @@ for epoch in range(cf.training.epochs):
                     case "spategan":
                         y_pred = generator(x_batch)
                     case "diffusion_unet":
-                        y_pred = generator(x_batch_hr, timesteps).sample
+                        y_pred = generator(x_batch_hr, timesteps)
                         y_pred = torch.flatten(y_pred, start_dim=1)
                 loss = nn.L1Loss()(y_pred, y_batch)
 
@@ -310,7 +337,7 @@ for epoch in range(cf.training.epochs):
                         case "spategan":
                             y_pred = generator(x_batch)
                         case "diffusion_unet":
-                            y_pred = generator(x_batch_hr, timesteps).sample
+                            y_pred = generator(x_batch_hr, timesteps)
                             y_pred = torch.flatten(y_pred, start_dim=1)
 
                 all_preds.append(y_pred.cpu())
@@ -356,7 +383,7 @@ for epoch in range(cf.training.epochs):
                 "test_loss": test_loss,
                 "diagnostic_history": diagnostic_history,
             },
-            f"{cf.logging.run_dir}/checkpoint_epoch_{epoch + 1}.pt",
+            f"{cf.logging.run_dir}/checkpoints/checkpoint_epoch_{epoch + 1}.pt",
         )
         logger.info("  Checkpoint saved")
 
@@ -387,7 +414,7 @@ torch.save(
         "disc_optimizer_state_dict": disc_opt.state_dict(),
         "diagnostic_history": diagnostic_history,
     },
-    f"{cf.logging.run_dir}/final_models.pt",
+    f"{cf.logging.run_dir}/checkpoints/final_models.pt",
 )
 
 logger.info(f"\nGAN training complete! Models saved to {cf.logging.run_dir}")

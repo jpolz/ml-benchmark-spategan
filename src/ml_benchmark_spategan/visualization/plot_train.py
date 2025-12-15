@@ -106,7 +106,7 @@ def plot_predictions(
     epoch,
     device,
     sample_idx=0,
-    input_cols=5,
+    input_cols=3,
     norm_params=None,
 ):
     """
@@ -134,7 +134,7 @@ def plot_predictions(
             case "spategan":
                 y_pred = generator(x)
             case "diffusion_unet":
-                y_pred = generator(x, torch.zeros([1]).to(device)).sample
+                y_pred = generator(x, torch.zeros([1]).to(device))
             case _:
                 raise ValueError(f"Invalid option: {cf.model.generator_architecture}")
 
@@ -219,7 +219,7 @@ def plot_predictions(
     plt.suptitle(f"Epoch {epoch} — Sample {sample_idx}", fontsize=15, y=0.99)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-    outpath = f"{cf.logging.run_dir}/predictions_epoch_{epoch}_s{sample_idx}.png"
+    outpath = f"{cf.logging.run_dir}/sample_plots/predictions_epoch_{epoch}_s{sample_idx}.png"
     plt.savefig(outpath, dpi=150, bbox_inches="tight")
     plt.show()
     plt.close(fig)

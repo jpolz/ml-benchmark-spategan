@@ -114,6 +114,10 @@ def setup_experiment_directory(base_dir: str, run_id: str) -> str:
     """
     experiment_dir = os.path.join(base_dir / "runs", run_id)
     os.makedirs(experiment_dir, exist_ok=True)
+    # sample plots subdirectory
+    os.makedirs(os.path.join(experiment_dir, "sample_plots"), exist_ok=True)
+    # checkpoints subdirectory
+    os.makedirs(os.path.join(experiment_dir, "checkpoints"), exist_ok=True)
     return experiment_dir
 
 
