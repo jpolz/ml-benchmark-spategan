@@ -3,8 +3,8 @@ data:
   domain: NZ # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
-  var_target: tasmax # tasmax or pr !!! check generator final activation if changing variable !!!
-  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target"
+  var_target: pr # tasmax or pr 
+  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
@@ -33,32 +33,34 @@ training:
   early_stopping: true
   patience: 10
   checkpoint_dir: "checkpoints"
+  fss_loss: False # mainly for precip
   loss_weights:
     l1: 1.0
     gan: 0.05
+    fss: 0.5
 
 # Model configuration
 model:
-  generator_architecture: "diffusion_unet" # "diffusion_unet" or "spagan"
-  discriminator_architecture: "spagan" # "unet" or "spagan"
-  filter_size: 96
+  generator_architecture: "diffusion_unet" # "diffusion_unet" or "spategan"
+  discriminator_architecture: "spategan" # "unet" or "spategan"
+  filter_size: 128
   n_input_channels: 15
   n_output_channels: 1
   dropout_seed: 42
   dropout_ratio: 0.2
-  generator_finalactivation: null # "tanh" for minus1_to_plus1 normalization, "softplus" for log normalization, null for standardization
+  generator_finalactivation: null # currently changed to norm technique/// "tanh" for minus1_to_plus1 normalization, "softplus" for log normalization, null for standardization
   
   # Discriminator architecture config
   discriminator:
     # High-resolution path channels (for target/prediction at 128x128)
     # Each entry creates one ResidualBlock2D with stride=2 (except first with stride=1)
-    hr_channels: [64, 128, 256, 256, 128]
+    hr_channels: [128, 256, 256, 256, 128]
     # Low-resolution path channels (for coarse input at 16x16)
     # Each entry creates one ResidualBlock2D with stride=2 (except first with stride=1)
-    lr_channels: [64, 64]
+    lr_channels: [128, 128]
     # Combined path channels after concatenating hr and lr features
     # Each entry creates one ResidualBlock2D with stride=2
-    combined_channels: [128]
+    combined_channels: [256]
     # Output head channels (final should be 1 for binary classification)
     # Creates Conv2d layers with LeakyReLU between (except last layer)
     output_channels: [64, 1]
