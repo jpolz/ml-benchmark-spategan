@@ -1,14 +1,11 @@
 import xarray as xr
 
-def set_cordex_esd_attributes(ds, attributes_dict):
+def set_cordex_ml_benchmark_attributes(ds, attributes_dict):
 
     """
-    Set CORDEX ESD-specific global attributes on an xarray Dataset according to
-    the CORDEX experiment design for statistical downscaling of CMIP6.
+    Set CORDEX ML-Benchmark-specific global attributes on an xarray Dataset.
     This function removes all existing global attributes and replaces them with
-    only the CORDEX ESD-compliant metadata.
-
-    https://cordex.org/wp-content/uploads/2024/04/Second-order-draft-CORDEX-experiment-design-for-statistical-downscaling-of-CMIP6.pdf
+    only the CORDEX ML-Benchmark-compliant metadata.
 
     Parameters:
     -----------
@@ -18,21 +15,26 @@ def set_cordex_esd_attributes(ds, attributes_dict):
         Dictionary containing the attributes to set. Required keys:
         - 'project_id': Should be 'CORDEX'
         - 'activity_id': Should be 'ML-Benchmark'
-        - 'source_type': Should be 'ESD-Combined'
-        - 'esd_method_id': Short identifier of the ESD method
-        - 'esd_method_version': Version of the ESD method
-        - 'esd_method_description': Free text describing the ESD method
-        - 'training_methodology': Free text describing training methodology and data
-        - 'training_methodology_id': Short identifier for training configuration (no dashes)
-        - 'training_experiment': What training experiment was used to train the model
-        - 'evaluation_experiment': What evaluation experiment was used to evaluate the model
-        - 'probabilistic_output': 'yes' if probabilistic method
-        - 'realization_generation_id': 
-            For a single realization: 'rM' (where M is the realization number, e.g., 'r1')
-            For an ensemble of realizations: 'ensemble'
-        - 'institution_id': Institution identifier
-        - 'further_info_url': URL for further information (e.g. publication or repository)
-        - 'source_id': Full source identifier (esd_method_id-esd_version-training_methodology_id-realization_generation_id)
+        - 'product': Should be 'emulator-output'
+        - 'benchmark_id': Identifier for the benchmark version
+        - 'institution_id': Short acronym for the institution responsible for predictions
+        - 'institution': Full name of institution responsible for the emulated data sets
+        - 'contact': Contact information (name, email optional) of the institution or researcher that is
+           responsible for the predictions 
+        - 'creation_date': Date of creation (e.g., 2025-03-20)
+        - 'emulator_id': Short identifier for the emulation method family
+        - 'emulator': Description of the emulation method (architecture, key features, etc.)
+        - 'training_id': Short code for the specific training configuration
+        - 'training': Full description of training setup (predictors, predictands, domains, time periods, pre-processing, loss, etc.)
+        - 'stochastic_output': Does the emulator generate stochastic/probabilistic realizations? (yes or no)
+        - 'version_realization': Description of the realization(s) used to obtain the final prediction. If the model is deterministic,
+           this field can be left empty. When there are M realizations and we refer to a specific run vX, we denote it as vX-rM.
+           If we aggregate over M realizations (for example, their mean) instead of the individual realizations, we write vX-aggM
+        - 'version_realization_info': Optional additional information about version_realization field. For example: the realizations
+           were aggregated using the standard mean
+
+        - 'reference_url': Reference information about the model used (e.g., DOI or publication URL)
+        - 'reproducibility_url': Reproducibility information about the model used (e.g., GitHub repository)
 
     Returns:
     --------
@@ -50,10 +52,6 @@ def set_cordex_esd_attributes(ds, attributes_dict):
     for key, value in attributes_dict.items():
         ds_copy.attrs[key] = value
 
-    # Generate the source_id
-    if 'source_id' not in attributes_dict and 'esd_method_id' in attributes_dict and 'training_methodology_id' in attributes_dict and 'esd_version' in attributes_dict:
-        ds_copy.attrs['source_id'] = f"{attributes_dict['esd_method_id']}-{attributes_dict['esd_version']}-{attributes_dict['training_methodology_id']}-{attributes_dict['realization_generation_id']}"
-
     return ds_copy
 
 # Example usage
@@ -62,37 +60,40 @@ if __name__ == "__main__":
     # Load the dataset
     data = xr.open_dataset('./example.nc')
 
-    # Define the CORDEX ESD attributes
+    # Define the CORDEX ML-Benchmark attributes
     cordex_attrs = {
         # General attributes
         'project_id': 'CORDEX',
         'activity_id': 'ML-Benchmark',
-        'source_type': 'ESD-Combined',
+        'product': 'emulator-output',
+        'benchmark_id': 'v1.0',
 
-        # ESD method description and version
-        'esd_method_id': 'DeepESD',
-        'esd_method_version': 'v1',
-        'esd_method_description': 'Deep convolutional neural network including 3 convolution and one dense layer, with ReLU activation functions.',
+        # Institution information
+        'institution_id': 'IFCA',
+        'institution': 'Instituto de Física de Cantabria (IFCA), CSIC-Universidad de Cantabria',
+        'contact': 'Contact person, email@example.com',
+        'creation_date': '2025-03-20',
 
-        # Training methodology description and version
-        'training_methodology': (
-            'Input data is standardized at a gridbox level using the mean/std of the reanalysis '
-            'in the training period. No bias adjustment is performed.'
+        # Emulator information
+        'emulator_id': 'DeepESD',
+        'emulator': 'Deep convolutional neural network including 3 convolution and one dense layer, with ReLU activation functions.',
+
+        # Training configuration
+        'training_id': 'm1',
+        'training': (
+            'Standardized input data at gridbox level using mean/std of reanalysis in training period. '
+            'No bias adjustment performed. Training on historical and future experiments.'
         ),
-        'training_methodology_id': 'm1',
 
-        # Experiments settings
-        'training_experiment': 'Emulator_hist_future',
-        'evaluation_experiment': 'Extrapolation_imperfect_hard',
+        # Output characteristics
+        'stochastic_output': 'no',
+        'version_realization': '',
+        'version_realization_info': '',
 
-        # Probabilistic output
-        'probabilistic_output': 'no',
-        'realization_generation_id': 'r1',
-
-        # Institution info and further information
-        'institution_id': 'Instituto de Física de Cantabria (IFCA), CSIC-Universidad de Cantabria',
-        'further_info_url': 'https://doi.org/10.5194/gmd-15-6747-2022'
+        # Reference and reproducibility
+        'reference_url': 'https://doi.org/10.5194/gmd-15-6747-2022',
+        'reproducibility_url': 'https://zenodo.org/records/6828304'
     }
 
     # Create the attributes
-    data_with_attrs = set_cordex_esd_attributes(data, cordex_attrs)
+    data_with_attrs = set_cordex_ml_benchmark_attributes(data, cordex_attrs)
