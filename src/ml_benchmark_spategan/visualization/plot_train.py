@@ -315,8 +315,8 @@ def plot_predictions(
     else:
         im_p = ax_pred.imshow(y_pred_np, cmap=cmap, vmin=vmin, vmax=vmax)
 
-    ax_pred.coastlines(resolution="10m", linewidth=0.5)
-    ax_pred.add_feature(cfeature.BORDERS, linestyle=":", linewidth=0.5)
+    ax_pred.coastlines(resolution="10m", linewidth=2)
+    ax_pred.add_feature(cfeature.BORDERS, linestyle=":", linewidth=2)
     ax_pred.set_title("Predicted Fine-Scale", fontsize=11)
     plt.colorbar(im_p, ax=ax_pred, fraction=0.04, pad=0.02, orientation="horizontal")
 
