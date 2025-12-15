@@ -114,6 +114,10 @@ def setup_experiment_directory(base_dir: str, run_id: str) -> str:
     """
     experiment_dir = os.path.join(base_dir / "runs", run_id)
     os.makedirs(experiment_dir, exist_ok=True)
+    # sample plots subdirectory
+    os.makedirs(os.path.join(experiment_dir, "sample_plots"), exist_ok=True)
+    # checkpoints subdirectory
+    os.makedirs(os.path.join(experiment_dir, "checkpoints"), exist_ok=True)
     return experiment_dir
 
 
@@ -150,3 +154,20 @@ def set_up_run(project_base: str) -> Config:
     logger.info(f"Run directory set up at: {run_dir}")
 
     return cf
+
+
+def save_norm_params(run_dir: str, norm_params: dict):
+    """
+    Save normalization parameters to netcdf.
+
+    Parameters
+    ----------
+    run_dir : str
+        Directory where to save the normalization parameters.
+    norm_params : dict
+        Dictionary containing normalization parameters.
+    """
+    
+    norm_params['y_min'].to_netcdf(os.path.join(run_dir, "ymin.nc"))
+    norm_params['y_max'].to_netcdf(os.path.join(run_dir, "ymax.nc"))
+    

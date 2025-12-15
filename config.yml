@@ -1,31 +1,67 @@
 # Data configuration
 data:
-  domain: "SA"
-  training_experiment: "ESD_pseudo_reality"
-  data_path: "/bg/fast/aihydromet/cordexbench/"
-  var_target: "tasmax"
-  normalization: "standard"
+  domain: NZ # one of SA, ALPS or NZ
+  training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
+  data_path: /bg/fast/aihydromet/cordexbench/
+  var_target: tasmax # tasmax or pr !!! check generator final activation if changing variable !!!
+  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target"
   num_workers: 4
+  t_past: 0  # number of past time steps as input
+  t_future: 0  # number of future time steps to predict
 
 # Training configuration
 training:
-  batch_size: 32
-  epochs: 40
-  learning_rate: 0.0001
-  optimizer: "AdamW"
-  scheduler: null
+  batch_size: 4
+  epochs: 3000
+  batches_per_epoch: 10  # set to null to use all data; otherwise set an integer value
+  batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
+  n_critic: 2  # number of discriminator updates per generator update
+  generator:
+    learning_rate: 0.00005
+    optimizer: "AdamW"
+    scheduler: null
+    beta1: 0.0
+    beta2: 0.999
+    weight_decay: 0.0001
+  discriminator:
+    learning_rate: 0.0005
+    optimizer: "AdamW"
+    scheduler: null
+    beta1: 0.0
+    beta2: 0.999
+    weight_decay: 0.0001
   early_stopping: true
   patience: 10
   checkpoint_dir: "checkpoints"
+  loss_weights:
+    l1: 1.0
+    gan: 0.05
 
 # Model configuration
 model:
-  architecture: "spagan"
+  generator_architecture: "diffusion_unet" # "diffusion_unet" or "spagan"
+  discriminator_architecture: "spagan" # "unet" or "spagan"
   filter_size: 96
   n_input_channels: 15
   n_output_channels: 1
   dropout_seed: 42
   dropout_ratio: 0.2
+  generator_finalactivation: null # "tanh" for minus1_to_plus1 normalization, "softplus" for log normalization, null for standardization
+  
+  # Discriminator architecture config
+  discriminator:
+    # High-resolution path channels (for target/prediction at 128x128)
+    # Each entry creates one ResidualBlock2D with stride=2 (except first with stride=1)
+    hr_channels: [64, 128, 256, 256, 128]
+    # Low-resolution path channels (for coarse input at 16x16)
+    # Each entry creates one ResidualBlock2D with stride=2 (except first with stride=1)
+    lr_channels: [64, 64]
+    # Combined path channels after concatenating hr and lr features
+    # Each entry creates one ResidualBlock2D with stride=2
+    combined_channels: [128]
+    # Output head channels (final should be 1 for binary classification)
+    # Creates Conv2d layers with LeakyReLU between (except last layer)
+    output_channels: [64, 1]
 
 # Evaluation configuration
 evaluation:
@@ -38,5 +74,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 10 # number of epochs between checkpoints
-  map_frequency: 5 # number of epochs between plotting maps
+  checkpoint_frequency: 100 # number of epochs between checkpoints
+  map_frequency: 20 # number of epochs between plotting maps
+  diagnostic_frequency: 20 # number of epochs between computing diagnostics

@@ -13,8 +13,29 @@ For more details on the CORDEX Benchmark dataset properties, see the data notebo
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import xarray as xr
 from torch.utils.data import DataLoader, Dataset
+
+
+def upscale_nn(x):
+    # x: (15, 16, 16)
+    return F.interpolate(
+        x, 
+        size=(128, 128),
+        mode="bilinear"
+    )
+    
+def add_noise_channel(x):
+    # x: (B, 15, 128, 128)
+    noise = torch.randn(
+        x.size(0),      # batch
+        1,              # 1 noise channel
+        x.size(2),      # height = 128
+        x.size(3),      # width = 128
+        device=x.device # put noise on same device (GPU or CPU)
+    )
+    return torch.cat([x, noise], dim=1)
 
 
 class EmulationTrainingDataset(Dataset):
@@ -42,6 +63,57 @@ class EmulationTrainingDataset(Dataset):
     def __getitem__(self, idx):
         x_sample, y_sample = self.x_data[idx, :], self.y_data[idx, :]
         return x_sample, y_sample
+
+    def _get_shapes(self):
+        return self.x_data.shape[1:], self.y_data.shape[1:]
+
+
+class EmulationTrainingDatasetSpate(Dataset):
+    """
+    PyTorch Dataset for RCM emulation training with spatiotemporal samples.
+
+    This dataset outputs both inputs (GCM predictors) and targets (RCM outputs)
+    for supervised training of the emulator.
+
+    Args:
+        x_data: Input predictor data (GCM variables). Can be numpy array or torch tensor.
+        y_data: Target predictand data (RCM output). Can be numpy array or torch tensor.
+        t_future: Number of future time steps to use as input
+        t_past: Number of past time steps to use as input
+    """
+
+    def __init__(self, x_data, y_data, times, t_future=1, t_past=1):
+        if not isinstance(x_data, torch.Tensor):
+            x_data = torch.tensor(x_data)
+        if not isinstance(y_data, torch.Tensor):
+            y_data = torch.tensor(y_data)
+        self.x_data, self.y_data = x_data, y_data
+        self.times = times
+        self.t_future = t_future
+        self.t_past = t_past
+
+    def __len__(self):
+        return len(self.x_data)
+
+    def __getitem__(self, idx):
+        if self.t_future == 0 and self.t_past == 0:
+            x_sample, y_sample = self.x_data[idx, :], self.y_data[idx, :]
+            return x_sample, y_sample
+        else:
+            # get time of index
+            t = self.times[idx]
+            print(f"t: {t}")
+            # get indices for past and future time steps
+            idxs = []
+            for tp in range(-self.t_past, self.t_future+1):
+                print(f"tp: {tp}")
+                print(f"t + tp: {t + np.timedelta64(tp, 'D')}")
+                idx_t = np.where(self.times == t + np.timedelta64(tp, 'D'))[0]
+                print(f"idx_t: {idx_t}, idx: {idx}")
+                if len(idx_t) > 0:
+                    idxs.append(idx_t[0])
+            x_sample, y_sample = self.x_data[idxs, :], self.y_data[idxs, :]
+            return x_sample, y_sample
 
     def _get_shapes(self):
         return self.x_data.shape[1:], self.y_data.shape[1:]
@@ -101,7 +173,7 @@ def build_dataloaders(cf):
             - cf.data.domain: 'ALPS', 'NZ', or 'SA'
             - cf.data.var_target: Target variable ('tasmax' or 'pr')
             - cf.data.data_path: Path to CORDEX benchmark data
-            - cf.data.normalization: 'standardization', 'minmax', 'log', or None
+            - cf.data.normalization: 'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1'
             - cf.data.num_workers: Number of workers for DataLoader
             - cf.training.batch_size: Batch size for training
 
@@ -131,7 +203,9 @@ def build_dataloaders(cf):
 
     predictand_filename = f"{cf.data.data_path}/{cf.data.domain}/{cf.data.domain}_domain/train/{cf.data.training_experiment}/target/pr_tasmax_{cf.data.gcm_name}_{period_training}.nc"
     predictand = xr.open_dataset(predictand_filename)
-    predictand = predictand[[cf.data.var_target]]
+    print(cf.data.var_target)
+    predictand = predictand[[cf.data.var_target]].astype("float32")
+    print(predictand)
 
     if cf.data.training_experiment == "ESD_pseudo_reality":
         years_train = list(range(1961, 1975))
@@ -142,9 +216,11 @@ def build_dataloaders(cf):
 
     x_train = predictor.sel(time=np.isin(predictor["time"].dt.year, years_train))
     y_train = predictand.sel(time=np.isin(predictand["time"].dt.year, years_train))
+    times_train = x_train["time"].values
 
     x_test = predictor.sel(time=np.isin(predictor["time"].dt.year, years_test))
     y_test = predictand.sel(time=np.isin(predictand["time"].dt.year, years_test))
+    times_test = x_test["time"].values
 
     if cf.data.normalization == "standardization":
         mean_train = x_train.mean("time")
@@ -158,8 +234,56 @@ def build_dataloaders(cf):
 
         x_train_stand = (x_train - min_train) / (max_train - min_train)
         x_test_stand = (x_test - min_train) / (max_train - min_train)
-    elif cf.data.normalization == "log":
-        raise NotImplementedError("Log normalization not implemented yet")
+    elif cf.data.normalization == "std_log_target":
+        mean_train = x_train.mean("time")
+        std_train = x_train.std("time")
+
+        x_train_stand = (x_train - mean_train) / std_train
+        x_test_stand = (x_test - mean_train) / std_train
+
+        # log transform y
+        y_train = np.log1p(y_train+1e-6)
+        y_test = np.log1p(y_test+1e-6)
+
+    elif cf.data.normalization == "m1p1_log_target":
+        min_train = x_train.min("time")
+        max_train = x_train.max("time")
+
+        x_train_stand = (x_train - min_train) / (max_train - min_train)
+        x_train_stand = x_train_stand * 2 - 1
+        x_test_stand = (x_test - min_train) / (max_train - min_train)
+        x_test_stand = x_test_stand * 2 - 1
+
+        # log transform y
+        y_train = np.log1p(y_train+1e-6)
+        y_test = np.log1p(y_test+1e-6)
+
+    elif cf.data.normalization == "minus1_to_plus1":
+        min_train = x_train.min("time")
+        max_train = x_train.max("time")
+        # min_train = x_train.min()
+        # max_train = x_train.max()
+
+        x_train_stand = (x_train - min_train) / (max_train - min_train)
+        x_train_stand = x_train_stand * 2 - 1
+        x_test_stand = (x_test - min_train) / (max_train - min_train)
+        x_test_stand = x_test_stand * 2 - 1
+
+        # normalize y as well (?) --> inverse missing
+        # y_min_train = y_train[cf.data.var_target].min().values
+        # y_max_train = y_train[cf.data.var_target].max().values
+        y_min_train = y_train.min("time")
+        y_max_train = y_train.max("time")
+        # print(f"y_min_train: {y_min_train}")
+        # print(f"y_max_train: {y_max_train}")
+        # cf.data.y_min = float(y_min_train)
+        # cf.data.y_max = float(y_max_train)
+
+        y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
+        y_train = y_train * 2 - 1
+        y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
+        y_test = y_test * 2 - 1
+
     else:
         x_train_stand = x_train
         x_test_stand = x_test
@@ -182,13 +306,27 @@ def build_dataloaders(cf):
     )
     y_test_stack_array = torch.from_numpy(y_test_stack.to_array()[0, :].values)
 
-    dataset_training = EmulationTrainingDataset(
-        x_data=x_train_stand_array, y_data=y_train_stack_array
+    dataset_training = EmulationTrainingDatasetSpate(
+        x_data=x_train_stand_array, 
+        y_data=y_train_stack_array, 
+        times=times_train, 
+        t_future=cf.data.t_future, 
+        t_past=cf.data.t_past,
+    )
+
+    if cf.training.batches_per_epoch is not None:
+        num_samples = cf.training.batches_per_epoch * cf.training.batch_size
+    else:
+        num_samples = int(len(dataset_training)/cf.training.batch_size)*cf.training.batch_size
+    sampler = torch.utils.data.RandomSampler(
+        dataset_training, 
+        replacement=False,
+        num_samples=num_samples
     )
     dataloader_train = DataLoader(
         dataset=dataset_training,
         batch_size=cf.training.batch_size,
-        shuffle=True,
+        sampler=sampler,
         num_workers=cf.data.num_workers,
     )
 
@@ -202,7 +340,22 @@ def build_dataloaders(cf):
         num_workers=cf.data.num_workers,
     )
 
-    return dataloader_train, test_dataloader, cf
+    # Store normalization parameters for denormalization
+    norm_params = {
+        "normalization": cf.data.normalization,
+        "spatial_dims": spatial_dims,
+        "y_test_coords": y_test.coords,  # Store original unstacked coords
+        "spatial_shape": (
+            len(y_test[spatial_dims[0]]),
+            len(y_test[spatial_dims[1]]),
+        ),  # (H, W)
+    }
+
+    if cf.data.normalization == "minus1_to_plus1":
+        norm_params["y_min"] = y_min_train
+        norm_params["y_max"] = y_max_train
+
+    return dataloader_train, test_dataloader, cf, norm_params
 
 
 def build_dummy_dataloaders(
