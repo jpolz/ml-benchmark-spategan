@@ -24,10 +24,18 @@ body:
         - **project_id**: CORDEX
         - **activity_id**: ML-Benchmark
         - **product**: emulator-output
+        - **benchmark_id**: v1.0.0
 
-  - type: markdown
+  - type: input
+    id: zip_name
     attributes:
-      value: "**benchmark_id**: v1.0.0"
+      label: Submission Archive Name
+      description: >
+        Name of the zip file containing the predictions to be submitted to the cluster.
+        Must follow the format: {emulator_id}_{training_id}_{institution_id}.zip
+      placeholder: "DeepESD_v1_m1_IFCA.zip"
+    validations:
+      required: true
 
   - type: input
     id: creation_date
@@ -85,7 +93,7 @@ body:
     attributes:
       label: Emulator ID
       description: >
-        Short identifier for the emulation method family (e.g., DeepESD, RandomForest, XGBoost)
+        Short identifier for the emulation method family (e.g., DeepESD_v1, XGBoost_v2)
       placeholder: "DeepESD"
     validations:
       required: true
