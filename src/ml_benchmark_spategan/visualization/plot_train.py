@@ -5,6 +5,8 @@ import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
 import torch
 from matplotlib import gridspec
+import matplotlib.colors as mcolors
+import numpy as np
 
 
 def plot_losses(loss_train, loss_test, cf):
@@ -128,9 +130,6 @@ def plot_predictions(
         cmap = "RdYlBu_r"
     elif cf.data.var_target == "pr":
         # Create custom colormap: white for 0 and below, jet for positive values
-        import matplotlib.colors as mcolors
-        import matplotlib.pyplot as plt
-        import numpy as np
 
         # Get jet colormap
         jet = plt.cm.get_cmap("jet")
