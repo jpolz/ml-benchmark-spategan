@@ -247,8 +247,32 @@ for epoch in range(cf.training.epochs):
         # Reshape y_batch to 2D for discriminator
         y_batch_2d = y_batch.view(-1, 1, 128, 128)
 
-        # Use the train_gan_step function from spagan2d
-        gen_loss, disc_loss = train_gan_step(
+        # Train discriminator n_critic times
+        n_critic = getattr(cf.training, "n_critic", 1)
+        disc_losses_batch = []
+
+        for _ in range(n_critic):
+            # Train discriminator only
+            _, disc_loss = train_gan_step(
+                config=cf,
+                input_image=x_batch,
+                input_image_hr=x_batch_hr,
+                target=y_batch_2d,
+                step=epoch * len(dataloader_train) + batch_idx,
+                discriminator=discriminator,
+                generator=generator,
+                gen_opt=None,  # Don't update generator
+                disc_opt=disc_opt,
+                scaler=scaler,
+                criterion=criterion,
+                timesteps=timesteps,
+                loss_weights=cf.training.loss_weights,
+                condition_separate_channels=condition_separate_channels,
+            )
+            disc_losses_batch.append(disc_loss)
+
+        # Train generator once
+        gen_loss, _ = train_gan_step(
             config=cf,
             input_image=x_batch,
             input_image_hr=x_batch_hr,
@@ -257,7 +281,7 @@ for epoch in range(cf.training.epochs):
             discriminator=discriminator,
             generator=generator,
             gen_opt=gen_opt,
-            disc_opt=disc_opt,
+            disc_opt=None,  # Don't update discriminator
             scaler=scaler,
             criterion=criterion,
             timesteps=timesteps,
@@ -266,7 +290,7 @@ for epoch in range(cf.training.epochs):
         )
 
         epoch_gen_losses.append(gen_loss)
-        epoch_disc_losses.append(disc_loss)
+        epoch_disc_losses.append(np.mean(disc_losses_batch))
 
     # Calculate average training losses
     train_gen_loss = np.mean(epoch_gen_losses)
@@ -279,7 +303,10 @@ for epoch in range(cf.training.epochs):
     test_losses = []
 
     with torch.no_grad():
-        for x_batch, y_batch in test_dataloader[:cf.training.batches_per_validation]:
+        for batch_idx, (x_batch, y_batch) in enumerate(test_dataloader):
+            if batch_idx >= cf.training.batches_per_validation:
+                break
+
             x_batch = x_batch.to(device)
             x_batch_hr = dataloader.upscale_nn(x_batch)
             x_batch_hr = dataloader.add_noise_channel(

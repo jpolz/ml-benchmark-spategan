@@ -407,10 +407,10 @@ def train_gan_step(
         Discriminator model.
     generator : nn.Module
         Generator model.
-    gen_opt : torch.optim.Optimizer
-        Optimizer for the generator.
-    disc_opt : torch.optim.Optimizer
-        Optimizer for the discriminator.
+    gen_opt : torch.optim.Optimizer or None
+        Optimizer for the generator. If None, generator is not updated.
+    disc_opt : torch.optim.Optimizer or None
+        Optimizer for the discriminator. If None, discriminator is not updated.
     scaler : torch.cuda.amp.GradScaler
         Gradient scaler for mixed precision training.
     criterion : nn.Module
@@ -425,102 +425,128 @@ def train_gan_step(
     generator.train()
     discriminator.train()
 
-    gen_opt.zero_grad(set_to_none=True)
+    gen_loss = 0.0
+    disc_loss = 0.0
 
-    # mixed precission
-    with amp.autocast("cuda"):
-        ##################
-        ### Generator: ###
-        ##################
+    ##################
+    ### Generator: ###
+    ##################
+    if gen_opt is not None:
+        gen_opt.zero_grad(set_to_none=True)
 
-        ## generate multiple ensemble prediction-
-        # Generator outputs flattened predictions, reshape to 2D
-        match config.model.generator_architecture:
-            case "spategan":
-                gen_outputs = [
-                    generator(input_image).view(-1, 1, 128, 128) for _ in range(3)
-                ]
-            case "diffusion_unet":
-                gen_outputs = [
-                    generator(add_noise_channel(input_image_hr), timesteps).view(
-                        -1, 1, 128, 128
+        # mixed precission
+        with amp.autocast("cuda"):
+            ## generate multiple ensemble prediction-
+            # Generator outputs flattened predictions, reshape to 2D
+            match config.model.generator_architecture:
+                case "spategan":
+                    gen_outputs = [
+                        generator(input_image).view(-1, 1, 128, 128) for _ in range(3)
+                    ]
+                case "diffusion_unet":
+                    gen_outputs = [
+                        generator(add_noise_channel(input_image_hr), timesteps).view(
+                            -1, 1, 128, 128
+                        )
+                        for _ in range(3)
+                    ]
+                case _:
+                    raise ValueError(
+                        f"Invalid option: {config.model.generator_architecture}"
                     )
-                    for _ in range(3)
-                ]
-            case _:
-                raise ValueError(
-                    f"Invalid option: {config.model.generator_architecture}"
+
+            gen_ensemble = torch.cat(gen_outputs, dim=1)
+            pred_log = gen_ensemble[:, 0:1]
+
+            # calculate ensemble mean
+            gen_ensemble = (
+                gen_ensemble[:, 0:1] + gen_ensemble[:, 1:2] + gen_ensemble[:, 2:3]
+            ) / 3
+
+            # Classify all fake batch with D
+            if condition_separate_channels:
+                disc_fake_output = discriminator(pred_log, input_image)
+            else:
+                disc_fake_output = discriminator(
+                    torch.cat((pred_log, input_image_hr), dim=1), timesteps
                 )
 
-        gen_ensemble = torch.cat(gen_outputs, dim=1)
-        pred_log = gen_ensemble[:, 0:1]
-
-        # calculate ensemble mean
-        gen_ensemble = (
-            gen_ensemble[:, 0:1] + gen_ensemble[:, 1:2] + gen_ensemble[:, 2:3]
-        ) / 3
-
-        # Classify all fake batch with D
-        if condition_separate_channels:
-            disc_fake_output = discriminator(pred_log, input_image)
-        else:
-            disc_fake_output = discriminator(
-                torch.cat((pred_log, input_image_hr), dim=1), timesteps
+            # BCE Loss:
+            gen_gan_loss = criterion(
+                disc_fake_output, torch.ones_like(disc_fake_output)
             )
 
-        # BCE Loss:
-        gen_gan_loss = criterion(disc_fake_output, torch.ones_like(disc_fake_output))
+            # Hinge Loss:
+            # gen_gan_loss = -torch.mean(disc_fake_output)
 
-        # Hinge Loss:
-        # gen_gan_loss = -torch.mean(disc_fake_output)
+            l1loss = nn.L1Loss()(gen_ensemble, target)
+            loss = loss_weights["l1"] * l1loss + loss_weights["gan"] * gen_gan_loss
 
-        l1loss = nn.L1Loss()(gen_ensemble, target)
-        loss = loss_weights["l1"] * l1loss + loss_weights["gan"] * gen_gan_loss
+        scaler.scale(loss).backward()
+        # Gradient Norm Clipping
+        # nn.utils.clip_grad_norm_(generator.parameters(), max_norm=2.0, norm_type=2)
 
-    scaler.scale(loss).backward()
-    # Gradient Norm Clipping
-    # nn.utils.clip_grad_norm_(generator.parameters(), max_norm=2.0, norm_type=2)
+        scaler.step(gen_opt)
+        scaler.update()
+        # Unscale gradients to prevent underflow -
+        # scaler.unscale_(gen_opt)
 
-    scaler.step(gen_opt)
-    scaler.update()
-    # Unscale gradients to prevent underflow -
-    # scaler.unscale_(gen_opt)
+        gen_loss = loss.item()
+    else:
+        # Generate prediction for discriminator training without updating generator
+        with torch.no_grad():
+            match config.model.generator_architecture:
+                case "spategan":
+                    pred_log = generator(input_image).view(-1, 1, 128, 128)
+                case "diffusion_unet":
+                    pred_log = generator(
+                        add_noise_channel(input_image_hr), timesteps
+                    ).view(-1, 1, 128, 128)
+                case _:
+                    raise ValueError(
+                        f"Invalid option: {config.model.generator_architecture}"
+                    )
 
     ####################
     ## Discriminator: ##
     ####################
-    disc_opt.zero_grad(set_to_none=True)
+    if disc_opt is not None:
+        disc_opt.zero_grad(set_to_none=True)
 
-    pred_log = pred_log.detach()
+        # Ensure pred_log is detached for discriminator training
+        if gen_opt is not None:
+            pred_log = pred_log.detach()
 
-    with amp.autocast("cuda"):
-        # discriminator prediction
-        disc_real_output = discriminator(target, input_image)
+        with amp.autocast("cuda"):
+            # discriminator prediction
+            disc_real_output = discriminator(target, input_image)
 
-        # label smoothing not needed for hinge loss.
-        real_labels = 0.8 + 0.2 * torch.rand_like(disc_real_output)
+            # label smoothing not needed for hinge loss.
+            real_labels = 0.8 + 0.2 * torch.rand_like(disc_real_output)
 
-        # BCE loss real:
-        disc_real = criterion(disc_real_output, real_labels)
-        # disc_real = criterion(disc_real_output, torch.ones_like(disc_real_output))
+            # BCE loss real:
+            disc_real = criterion(disc_real_output, real_labels)
+            # disc_real = criterion(disc_real_output, torch.ones_like(disc_real_output))
 
-        # Classify all fake batch with D
-        disc_fake_output = discriminator(pred_log, input_image)
+            # Classify all fake batch with D
+            disc_fake_output = discriminator(pred_log, input_image)
 
-        # Calculate D's loss on the all-fake batch BCE:
-        disc_fake = criterion(disc_fake_output, torch.zeros_like(disc_fake_output))
+            # Calculate D's loss on the all-fake batch BCE:
+            disc_fake = criterion(disc_fake_output, torch.zeros_like(disc_fake_output))
 
-    # Calculate the gradients for this batch, accumulated (summed) with previous gradients
-    scaler.scale(disc_fake + disc_real).backward()
+        # Calculate the gradients for this batch, accumulated (summed) with previous gradients
+        scaler.scale(disc_fake + disc_real).backward()
 
-    # Gradient Norm Clipping
-    # nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=2.0, norm_type=2)
-    scaler.step(disc_opt)
-    scaler.update()
-    # Unscale gradients to prevent underflow - dont know if really necessary
-    # scaler.unscale_(gen_opt)
+        # Gradient Norm Clipping
+        # nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=2.0, norm_type=2)
+        scaler.step(disc_opt)
+        scaler.update()
+        # Unscale gradients to prevent underflow - dont know if really necessary
+        # scaler.unscale_(gen_opt)
 
-    return loss.item(), (disc_fake + disc_real).item()
+        disc_loss = (disc_fake + disc_real).item()
+
+    return gen_loss, disc_loss
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 # Data configuration
 data:
-  domain: SA # one of SA, ALPS or NZ
+  domain: NZ # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
-  var_target: pr # tasmax or pr !!! check generator final activation if changing variable !!!
-  normalization: "m1p1_log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1'
+  var_target: tasmax # tasmax or pr !!! check generator final activation if changing variable !!!
+  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
@@ -12,9 +12,10 @@ data:
 # Training configuration
 training:
   batch_size: 4
-  epochs: 500
+  epochs: 3000
   batches_per_epoch: 10  # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
+  n_critic: 2  # number of discriminator updates per generator update
   generator:
     learning_rate: 0.00005
     optimizer: "AdamW"
@@ -34,7 +35,7 @@ training:
   checkpoint_dir: "checkpoints"
   loss_weights:
     l1: 1.0
-    gan: 0.1
+    gan: 0.05
 
 # Model configuration
 model:
@@ -45,7 +46,7 @@ model:
   n_output_channels: 1
   dropout_seed: 42
   dropout_ratio: 0.2
-  generator_finalactivation: "softplus"
+  generator_finalactivation: null # "tanh" for minus1_to_plus1 normalization, "softplus" for log normalization, null for standardization
   
   # Discriminator architecture config
   discriminator:
@@ -73,6 +74,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 50 # number of epochs between checkpoints
-  map_frequency: 10 # number of epochs between plotting maps
-  diagnostic_frequency: 10 # number of epochs between computing diagnostics
+  checkpoint_frequency: 100 # number of epochs between checkpoints
+  map_frequency: 20 # number of epochs between plotting maps
+  diagnostic_frequency: 20 # number of epochs between computing diagnostics
