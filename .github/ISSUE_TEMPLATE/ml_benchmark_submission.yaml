@@ -1,0 +1,226 @@
+name: Submit ML-Benchmark Prediction
+description: Submit metadata and details for an ML-Benchmark prediction submission
+title: "ML-Benchmark prediction submission: [Your Model Name]"
+labels: ["submission"]
+body:
+
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for submitting to CORDEX ML-Benchmark! 
+        Please carefully fill out each field below with details about your prediction submission.
+        For more information, see the [format_predictions README](../blob/main/format_predictions/README.md).
+
+  # General Information
+  - type: section
+    attributes:
+      description: "General submission information"
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Fixed Project Parameters
+        These values are fixed for all ML-Benchmark submissions:
+        - **project_id**: CORDEX
+        - **activity_id**: ML-Benchmark
+        - **product**: emulator-output
+
+  - type: input
+    id: benchmark_id
+    attributes:
+      label: Benchmark Version ID
+      description: >
+        Identifier for the benchmark version
+      placeholder: "v1.0.0"
+      value: "v1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: creation_date
+    attributes:
+      label: Creation Date
+      description: >
+        Date of creation in YYYY-MM-DD format
+      placeholder: "2025-03-20"
+    validations:
+      required: true
+
+  # Institution Information
+  - type: section
+    attributes:
+      description: "Institution and contact details"
+
+  - type: input
+    id: institution_id
+    attributes:
+      label: Institution ID
+      description: >
+        Short acronym that uniquely identifies your institution
+      placeholder: "IFCA"
+    validations:
+      required: true
+
+  - type: input
+    id: institution
+    attributes:
+      label: Institution Name
+      description: >
+        Full name of the institution responsible for the predictions
+      placeholder: "Instituto de Física de Cantabria (IFCA), CSIC-Universidad de Cantabria"
+    validations:
+      required: true
+
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Information
+      description: >
+        Contact information (name and email) of the person responsible for this submission.
+        This will be used for follow-up communication.
+      placeholder: "Contact Name, email@example.com"
+    validations:
+      required: true
+
+  # Emulator Information
+  - type: section
+    attributes:
+      description: "Details about the emulation/prediction method"
+
+  - type: input
+    id: emulator_id
+    attributes:
+      label: Emulator ID
+      description: >
+        Short identifier for the emulation method family (e.g., DeepESD, RandomForest, XGBoost)
+      placeholder: "DeepESD"
+    validations:
+      required: true
+
+  - type: textarea
+    id: emulator
+    attributes:
+      label: Emulator Description
+      description: >
+        Detailed description of the emulation method including architecture, key features, 
+        frameworks used, etc.
+      placeholder: "Deep convolutional neural network including 3 convolution and one dense layer, with ReLU activation functions."
+    validations:
+      required: true
+
+  # Training Configuration
+  - type: section
+    attributes:
+      description: "Training setup and configuration"
+
+  - type: input
+    id: training_id
+    attributes:
+      label: Training Configuration ID
+      description: >
+        Short code for the specific training configuration (e.g., m1, exp_a, v2_tuned)
+      placeholder: "m1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: training
+    attributes:
+      label: Training Description
+      description: >
+        Comprehensive description of the training setup including:
+        - Predictors and predictands used
+        - Domains and time periods
+        - Pre-processing steps
+        - Loss function and optimization details
+      placeholder: "Standardized input data at gridbox level using mean/std of reanalysis in training period. No bias adjustment performed. Training on historical and future experiments."
+    validations:
+      required: true
+
+  # Output Characteristics
+  - type: section
+    attributes:
+      description: "Output and realization information"
+
+  - type: dropdown
+    id: stochastic_output
+    attributes:
+      label: Stochastic/Probabilistic Output
+      description: >
+        Does your emulator generate stochastic or probabilistic realizations?
+      options:
+        - "no"
+        - "yes"
+    validations:
+      required: true
+
+  - type: textarea
+    id: version_realization
+    attributes:
+      label: Version Realization
+      description: >
+        Description of the realization(s) used to obtain the final prediction.
+        - For deterministic models, leave empty
+        - For M realizations and run vX, use format: vX-rM
+        - For aggregated realizations (e.g., mean of M realizations), use: vX-aggM
+      placeholder: "v1-r1"
+    validations:
+      required: false
+
+  - type: textarea
+    id: version_realization_info
+    attributes:
+      label: Realization Details
+      description: >
+        Optional additional information about the version_realization field.
+        For example: explain how realizations were aggregated (mean, median, etc.)
+      placeholder: "Realizations were aggregated using the standard mean"
+    validations:
+      required: false
+
+  # References and Reproducibility
+  - type: section
+    attributes:
+      description: "References and reproducibility"
+
+  - type: input
+    id: reference_url
+    attributes:
+      label: Reference URL
+      description: >
+        Reference information about the model (e.g., DOI, publication URL, technical documentation)
+      placeholder: "https://doi.org/10.5194/gmd-15-6747-2022"
+    validations:
+      required: true
+
+  - type: input
+    id: reproducibility_url
+    attributes:
+      label: Reproducibility URL
+      description: >
+        Reproducibility information about the model (e.g., GitHub repository, Zenodo record)
+      placeholder: "https://zenodo.org/records/6828304"
+    validations:
+      required: true
+
+  # Additional Information
+  - type: section
+    attributes:
+      description: "Additional notes (optional)"
+
+  - type: textarea
+    id: additional_notes
+    attributes:
+      label: Additional Notes
+      description: >
+        Any additional information or notes about this submission that might be relevant
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **Next Steps:** 
+        After submission, the maintainers will review your metadata. If everything looks good, you will receive a follow-up message with a link to a secure form for collecting additional private information (name, institution, email, and public key).
+
