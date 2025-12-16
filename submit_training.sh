@@ -14,12 +14,11 @@ echo "Start time: $(date)"
 echo "Working directory: $SLURM_SUBMIT_DIR"
 echo ""
 
-# Change to project root directory
-cd /bg/fast/env_polz-j/uvprojects/ml-benchmark-spategan
+# Change to project root directory (where this script is located)
+cd $SLURM_SUBMIT_DIR
 
-# Run training
-/bg/fast/env_polz-j/uvprojects/ml-benchmark-spategan/.venv/bin/python \
-    /bg/fast/env_polz-j/uvprojects/ml-benchmark-spategan/training/training_v2.py
+# Run training using virtual environment
+.venv/bin/python training/training_v2.py
 
 # Print end time
 echo ""

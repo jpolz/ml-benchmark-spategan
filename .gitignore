@@ -9,3 +9,5 @@
 format_predictions/generate_templates.py
 
 runs/
+logs/
+runs_summary.md

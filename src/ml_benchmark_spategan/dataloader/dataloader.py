@@ -20,20 +20,20 @@ from torch.utils.data import DataLoader, Dataset
 
 def upscale_nn(x):
     # x: (15, 16, 16)
-    return F.interpolate(
-        x, 
-        size=(128, 128),
-        mode="bilinear"
-    )
-    
+    return F.interpolate(x, size=(128, 128), mode="bilinear")
+
+
 def add_noise_channel(x):
     # x: (B, 15, 128, 128)
-    noise = torch.randn(
-        x.size(0),      # batch
-        1,              # 1 noise channel
-        x.size(2),      # height = 128
-        x.size(3),      # width = 128
-        device=x.device # put noise on same device (GPU or CPU)
+    noise = (
+        torch.randn(
+            x.size(0),  # batch
+            1,  # 1 noise channel
+            x.size(2),  # height = 128
+            x.size(3),  # width = 128
+            device=x.device,  # put noise on same device (GPU or CPU)
+        )
+        * 0.2
     )
     return torch.cat([x, noise], dim=1)
 
@@ -105,10 +105,10 @@ class EmulationTrainingDatasetSpate(Dataset):
             print(f"t: {t}")
             # get indices for past and future time steps
             idxs = []
-            for tp in range(-self.t_past, self.t_future+1):
+            for tp in range(-self.t_past, self.t_future + 1):
                 print(f"tp: {tp}")
                 print(f"t + tp: {t + np.timedelta64(tp, 'D')}")
-                idx_t = np.where(self.times == t + np.timedelta64(tp, 'D'))[0]
+                idx_t = np.where(self.times == t + np.timedelta64(tp, "D"))[0]
                 print(f"idx_t: {idx_t}, idx: {idx}")
                 if len(idx_t) > 0:
                     idxs.append(idx_t[0])
@@ -225,32 +225,38 @@ def build_dataloaders(cf):
     if cf.data.normalization == "standardization":
         mean_train = x_train.mean("time")
         std_train = x_train.std("time")
+        x_mean_train = mean_train
+        x_std_train = std_train
 
         x_train_stand = (x_train - mean_train) / std_train
         x_test_stand = (x_test - mean_train) / std_train
     elif cf.data.normalization == "minmax":
         min_train = x_train.min("time")
         max_train = x_train.max("time")
+        x_min_train = min_train
+        x_max_train = max_train
 
         x_train_stand = (x_train - min_train) / (max_train - min_train)
         x_test_stand = (x_test - min_train) / (max_train - min_train)
     elif cf.data.normalization == "std_log_target":
         mean_train = x_train.mean("time")
         std_train = x_train.std("time")
+        x_mean_train = mean_train
+        x_std_train = std_train
 
         x_train_stand = (x_train - mean_train) / std_train
         x_test_stand = (x_test - mean_train) / std_train
 
         # log transform y
-        y_train = np.log1p(y_train+1e-6)
-        y_test = np.log1p(y_test+1e-6)
+        y_train = np.log1p(y_train + 1e-6)
+        y_test = np.log1p(y_test + 1e-6)
 
     elif cf.data.normalization == "mp1p1_input_m1p1log_target":
-        
         # x sample normalization
         min_train = x_train.min("time")
         max_train = x_train.max("time")
-        
+        x_min_train = min_train
+        x_max_train = max_train
 
         x_train_stand = (x_train - min_train) / (max_train - min_train)
         x_train_stand = x_train_stand * 2 - 1
@@ -259,27 +265,28 @@ def build_dataloaders(cf):
 
         # y sample normalization
         # 1. log transform y
-        y_train = np.log1p(y_train+1e-6) - np.log1p(1e-6)
-        y_test = np.log1p(y_test+1e-6) - np.log1p(1e-6)
-        
+        y_train = np.log1p(y_train + 1e-6) - np.log1p(1e-6)
+        y_test = np.log1p(y_test + 1e-6) - np.log1p(1e-6)
+
         # 2. min-max to [-1, 1]
         y_min_train = y_train.min("time")
         y_max_train = y_train.max("time")
-        
+
         y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
         y_train = y_train * 2 - 1
-        
+
         y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
         y_test = y_test * 2 - 1
-        
+
         # to float32
         y_train = y_train.astype(np.float32)
-        y_test  = y_test.astype(np.float32)
-        
-        
+        y_test = y_test.astype(np.float32)
+
     elif cf.data.normalization == "m1p1_log_target":
         min_train = x_train.min("time")
         max_train = x_train.max("time")
+        x_min_train = min_train
+        x_max_train = max_train
 
         x_train_stand = (x_train - min_train) / (max_train - min_train)
         x_train_stand = x_train_stand * 2 - 1
@@ -287,14 +294,14 @@ def build_dataloaders(cf):
         x_test_stand = x_test_stand * 2 - 1
 
         # log transform y
-        y_train = np.log1p(y_train+1e-6)
-        y_test = np.log1p(y_test+1e-6)
-        
-        
+        y_train = np.log1p(y_train + 1e-6)
+        y_test = np.log1p(y_test + 1e-6)
 
     elif cf.data.normalization == "minus1_to_plus1":
         min_train = x_train.min("time")
         max_train = x_train.max("time")
+        x_min_train = min_train
+        x_max_train = max_train
         # min_train = x_train.min()
         # max_train = x_train.max()
 
@@ -344,21 +351,21 @@ def build_dataloaders(cf):
     y_train_stack_array = y_train_stack_array.view(-1, 1, 128, 128)
 
     dataset_training = EmulationTrainingDatasetSpate(
-        x_data=x_train_stand_array, 
-        y_data=y_train_stack_array, 
-        times=times_train, 
-        t_future=cf.data.t_future, 
+        x_data=x_train_stand_array,
+        y_data=y_train_stack_array,
+        times=times_train,
+        t_future=cf.data.t_future,
         t_past=cf.data.t_past,
     )
 
     if cf.training.batches_per_epoch is not None:
         num_samples = cf.training.batches_per_epoch * cf.training.batch_size
     else:
-        num_samples = int(len(dataset_training)/cf.training.batch_size)*cf.training.batch_size
+        num_samples = (
+            int(len(dataset_training) / cf.training.batch_size) * cf.training.batch_size
+        )
     sampler = torch.utils.data.RandomSampler(
-        dataset_training, 
-        replacement=False,
-        num_samples=num_samples
+        dataset_training, replacement=False, num_samples=num_samples
     )
     dataloader_train = DataLoader(
         dataset=dataset_training,
@@ -391,16 +398,28 @@ def build_dataloaders(cf):
         ),  # (H, W)
     }
 
+    # Store x normalization parameters based on normalization method
+    if cf.data.normalization in ["standardization", "std_log_target"]:
+        norm_params["x_mean"] = x_mean_train
+        norm_params["x_std"] = x_std_train
+    elif cf.data.normalization in [
+        "minmax",
+        "minus1_to_plus1",
+        "m1p1_log_target",
+        "mp1p1_input_m1p1log_target",
+    ]:
+        norm_params["x_min"] = x_min_train
+        norm_params["x_max"] = x_max_train
+
+    # Store y normalization parameters
     if cf.data.normalization == "minus1_to_plus1":
         norm_params["y_min"] = y_min_train
         norm_params["y_max"] = y_max_train
-    
+
     # store log min and max values:
     if cf.data.normalization == "mp1p1_input_m1p1log_target":
         norm_params["y_min"] = y_min_train
         norm_params["y_max"] = y_max_train
-        
-        
 
     return dataloader_train, test_dataloader, cf, norm_params
 

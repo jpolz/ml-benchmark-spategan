@@ -63,6 +63,28 @@ dataloader_train, test_dataloader, cf, norm_params = dataloader.build_dataloader
 # dataloader_train, test_dataloader = dataloader.build_dummy_dataloaders()
 # update cf in run directory
 cf.save()
+
+# Save normalization parameters if they exist
+if "y_min" in norm_params and "y_max" in norm_params:
+    norm_params["y_min"].to_netcdf(f"{cf.logging.run_dir}/y_min.nc")
+    norm_params["y_max"].to_netcdf(f"{cf.logging.run_dir}/y_max.nc")
+    logger.info(
+        f"Target normalization parameters (y_min, y_max) saved to {cf.logging.run_dir}"
+    )
+
+# Save x normalization parameters (mean/std or min/max)
+if "x_mean" in norm_params and "x_std" in norm_params:
+    norm_params["x_mean"].to_netcdf(f"{cf.logging.run_dir}/x_mean.nc")
+    norm_params["x_std"].to_netcdf(f"{cf.logging.run_dir}/x_std.nc")
+    logger.info(
+        f"Input normalization parameters (x_mean, x_std) saved to {cf.logging.run_dir}"
+    )
+elif "x_min" in norm_params and "x_max" in norm_params:
+    norm_params["x_min"].to_netcdf(f"{cf.logging.run_dir}/x_min.nc")
+    norm_params["x_max"].to_netcdf(f"{cf.logging.run_dir}/x_max.nc")
+    logger.info(
+        f"Input normalization parameters (x_min, x_max) saved to {cf.logging.run_dir}"
+    )
 # describe shapes of data
 logger.info("Training data shapes:")
 x_shape, y_shape = dataloader_train.dataset._get_shapes()
@@ -180,16 +202,26 @@ criterion = nn.BCEWithLogitsLoss()
 
 # FSS criterion
 fss_criterion = FSSLoss(
-                        thresholds=[0.1, 0.2, 0.4, 0.8, 1.6, 2.4, 4, 6, 10, 25], # not normalized thresholds
-                        scales=[2, 8, 16],
-                        device="cuda",
-                        sharpness=3.0,
-                        batch_size=10,
-                        config=cf,
-                        norm_params=norm_params,
-                                )
+    thresholds=[
+        0.1,
+        0.2,
+        0.4,
+        0.8,
+        1.6,
+        2.4,
+        4,
+        6,
+        10,
+        25,
+    ],  # not normalized thresholds
+    scales=[2, 8, 16],
+    device="cuda",
+    sharpness=3.0,
+    batch_size=10,
+    config=cf,
+    norm_params=norm_params,
+)
 
-   
 
 # Optimizers
 gen_opt = torch.optim.AdamW(
@@ -329,7 +361,7 @@ for epoch in range(cf.training.epochs):
                 x_batch_hr
             )  # add noise to HR or LR?
             y_batch_2d = y_batch.to(device)
-            
+
             # zero timestep, for diffusion UNET.
             timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
@@ -341,7 +373,7 @@ for epoch in range(cf.training.epochs):
                         y_pred = generator(x_batch_hr, timesteps)
 
                 loss = nn.L1Loss()(y_pred, y_batch_2d)
-                
+
                 fss_test_loss = fss_criterion(y_pred, y_batch_2d)
 
             test_losses.append(loss.item())
@@ -351,7 +383,6 @@ for epoch in range(cf.training.epochs):
     loss_gen_test.append(test_loss)
     mean_fss_test = np.mean(fss_test_losses)
     loss_fss_test.append(mean_fss_test)
-    
 
     # Print progress and plot
     if (epoch + 1) % cf.logging.log_frequency == 0 or epoch == 0:
@@ -363,7 +394,9 @@ for epoch in range(cf.training.epochs):
         logger.info(f"  Test Loss (FSS):     {mean_fss_test:.6f}")
 
         # Plot losses
-        plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf)
+        plot_adversarial_losses(
+            loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf
+        )
 
     # Compute diagnostics
     if (epoch + 1) % cf.logging.diagnostic_frequency == 0:
@@ -374,14 +407,13 @@ for epoch in range(cf.training.epochs):
         all_preds = []
         all_targets = []
 
-
         # to do change y to 2D
         with torch.no_grad():
             for x_batch, y_batch in test_dataloader:
                 x_batch = x_batch.to(device)
                 x_batch_hr = dataloader.upscale_nn(x_batch)
                 x_batch_hr = dataloader.add_noise_channel(x_batch_hr)
-                
+
                 y_batch = torch.flatten(y_batch, start_dim=1)
 
                 timesteps = torch.zeros([x_batch.shape[0]]).to(device)

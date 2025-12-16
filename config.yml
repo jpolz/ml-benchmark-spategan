@@ -1,6 +1,6 @@
 # Data configuration
 data:
-  domain: NZ # one of SA, ALPS or NZ
+  domain: SA # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr # tasmax or pr 
@@ -33,7 +33,7 @@ training:
   early_stopping: true
   patience: 10
   checkpoint_dir: "checkpoints"
-  fss_loss: False # mainly for precip
+  fss_loss: True # mainly for precip
   loss_weights:
     l1: 1.0
     gan: 0.05
