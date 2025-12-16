@@ -11,8 +11,8 @@ data:
 
 # Training configuration
 training:
-  batch_size: 4
-  epochs: 3000
+  batch_size: 8
+  epochs: 1000
   batches_per_epoch: 10  # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
   n_critic: 2  # number of discriminator updates per generator update
@@ -33,7 +33,7 @@ training:
   early_stopping: true
   patience: 10
   checkpoint_dir: "checkpoints"
-  fss_loss: True # mainly for precip
+  fss_loss: False # mainly for precip
   loss_weights:
     l1: 1.0
     gan: 0.05

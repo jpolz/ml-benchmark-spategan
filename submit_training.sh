@@ -1,9 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=spategan_train
-#SBATCH --partition=ccgp
+##SBATCH --partition=ccgp
+#SBATCH --partition=sockdolager
 #SBATCH --time=24:00:00
 #SBATCH --exclusive
-#SBATCH --qos=nvgpu
+##SBATCH --qos=nvgpu
+#SBATCH --qos=sdlgpu
 #SBATCH --output=logs/slurm_%j.out
 #SBATCH --error=logs/slurm_%j.err
 

@@ -302,23 +302,14 @@ def build_dataloaders(cf):
         max_train = x_train.max("time")
         x_min_train = min_train
         x_max_train = max_train
-        # min_train = x_train.min()
-        # max_train = x_train.max()
 
         x_train_stand = (x_train - min_train) / (max_train - min_train)
         x_train_stand = x_train_stand * 2 - 1
         x_test_stand = (x_test - min_train) / (max_train - min_train)
         x_test_stand = x_test_stand * 2 - 1
 
-        # normalize y as well (?) --> inverse missing
-        # y_min_train = y_train[cf.data.var_target].min().values
-        # y_max_train = y_train[cf.data.var_target].max().values
         y_min_train = y_train.min("time")
         y_max_train = y_train.max("time")
-        # print(f"y_min_train: {y_min_train}")
-        # print(f"y_max_train: {y_max_train}")
-        # cf.data.y_min = float(y_min_train)
-        # cf.data.y_max = float(y_max_train)
 
         y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
         y_train = y_train * 2 - 1
