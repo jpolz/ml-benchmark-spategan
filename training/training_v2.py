@@ -97,7 +97,12 @@ logger.info(f"  y: {y_shape}")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-match cf.model.generator_architecture:
+# Support both old and new config format
+architecture = cf.model.get("architecture") or cf.model.get(
+    "generator_architecture", "spategan"
+)
+
+match architecture:
     case "spategan":
         logger.info("Using spategan architecture")
         # Initialize models
@@ -120,26 +125,16 @@ match cf.model.generator_architecture:
                 output = self.model(sample, timestep).sample
                 return self.activation(output)
 
+        # Get UNet config from generator.diffusion_unet
+        unet_cfg = cf.model.generator.diffusion_unet
         base_generator = UNet2DModel(
-            sample_size=(128, 128),
-            in_channels=15 + 1,  # +1 == noise
-            out_channels=1,
-            layers_per_block=2,
-            block_out_channels=(64, 128, 256, 512, 1024),
-            down_block_types=(
-                "DownBlock2D",
-                "DownBlock2D",
-                "DownBlock2D",
-                "AttnDownBlock2D",
-                "AttnDownBlock2D",
-            ),
-            up_block_types=(
-                "AttnUpBlock2D",
-                "AttnUpBlock2D",
-                "UpBlock2D",
-                "UpBlock2D",
-                "UpBlock2D",
-            ),
+            sample_size=tuple(unet_cfg.sample_size),
+            in_channels=unet_cfg.in_channels,
+            out_channels=unet_cfg.out_channels,
+            layers_per_block=unet_cfg.layers_per_block,
+            block_out_channels=tuple(unet_cfg.block_out_channels),
+            down_block_types=tuple(unet_cfg.down_block_types),
+            up_block_types=tuple(unet_cfg.up_block_types),
         )
 
         # if predictions are not [-1, 1], change final activation
@@ -159,7 +154,7 @@ match cf.model.generator_architecture:
         )
 
     case _:
-        raise ValueError(f"Invalid option: {cf.model.generator_architecture}")
+        raise ValueError(f"Invalid option: {architecture}")
 
 if cf.model.discriminator_architecture == "unet":
     logger.info("Using UNet2DModel as discriminator")
@@ -267,7 +262,7 @@ logger.info(f"Starting GAN training for {cf.training.epochs} epochs...")
 val_iter = iter(test_dataloader)
 x_vis, y_vis = next(val_iter)
 x_vis, y_vis = x_vis.to(device), y_vis.to(device)
-if cf.model.generator_architecture == "diffusion_unet":
+if architecture == "diffusion_unet":
     x_vis = dataloader.upscale_nn(x_vis)
     x_vis = dataloader.add_noise_channel(x_vis)  # add noise to HR or LR?
 
@@ -366,7 +361,7 @@ for epoch in range(cf.training.epochs):
             timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
             with torch.amp.autocast("cuda"):
-                match cf.model.generator_architecture:
+                match architecture:
                     case "spategan":
                         y_pred = generator(x_batch)
                     case "diffusion_unet":
@@ -419,7 +414,7 @@ for epoch in range(cf.training.epochs):
                 timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                 with torch.amp.autocast("cuda"):
-                    match cf.model.generator_architecture:
+                    match architecture:
                         case "spategan":
                             y_pred = generator(x_batch)
                             y_pred = torch.flatten(y_pred, start_dim=1)

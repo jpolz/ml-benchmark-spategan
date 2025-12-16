@@ -8,6 +8,7 @@ from pathlib import Path
 import cartopy.crs as ccrs
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 import torch
 import xarray as xr
@@ -207,16 +208,24 @@ def plot_prediction_comparison(
         domain: Domain name (SA, NZ, ALPS)
         output_dir: Directory to save plot
     """
-    # Select colormap based on variable
+    # Select colormap and scaling based on variable
     if var_target == "tasmax":
         cmap = "RdYlBu_r"
         diff_cmap = "RdBu_r"
+        use_log_scale = False
     elif var_target == "pr":
-        cmap = "YlGnBu"
+        # Use better colormap for precipitation with log scale
+        # WhiteBlueGreenYellowRed scheme from NCL
+        colors_pr = ['#FFFFFF', '#E0F0FF', '#B3D9FF', '#66B3FF', '#3399FF',
+                     '#00FF00', '#66FF66', '#99FF33', '#CCFF00', '#FFFF00',
+                     '#FFCC00', '#FF9900', '#FF6600', '#FF3300', '#CC0000']
+        cmap = mcolors.LinearSegmentedColormap.from_list("precipitation", colors_pr)
         diff_cmap = "BrBG"
+        use_log_scale = True
     else:
         cmap = "viridis"
         diff_cmap = "RdBu_r"
+        use_log_scale = False
 
     # Setup projection
     central_longitude = 180 if domain == "NZ" else 0
@@ -237,11 +246,25 @@ def plot_prediction_comparison(
     gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
 
     # Determine vmin/vmax for each row
-    vmin_sample = min(y_test_sample.min().values, y_pred_sample.min().values)
-    vmax_sample = max(y_test_sample.max().values, y_pred_sample.max().values)
-
-    vmin_clim = min(y_test_clim.min().values, y_pred_clim.min().values)
-    vmax_clim = max(y_test_clim.max().values, y_pred_clim.max().values)
+    if use_log_scale:
+        # For precipitation, use log scale with minimum threshold
+        min_threshold = 0.01  # mm/day
+        vmin_sample = min_threshold
+        vmax_sample = max(y_test_sample.max().values, y_pred_sample.max().values)
+        vmin_clim = min_threshold
+        vmax_clim = max(y_test_clim.max().values, y_pred_clim.max().values)
+        
+        # Use LogNorm for precipitation
+        from matplotlib.colors import LogNorm
+        norm_sample = LogNorm(vmin=vmin_sample, vmax=vmax_sample)
+        norm_clim = LogNorm(vmin=vmin_clim, vmax=vmax_clim)
+    else:
+        vmin_sample = min(y_test_sample.min().values, y_pred_sample.min().values)
+        vmax_sample = max(y_test_sample.max().values, y_pred_sample.max().values)
+        vmin_clim = min(y_test_clim.min().values, y_pred_clim.min().values)
+        vmax_clim = max(y_test_clim.max().values, y_pred_clim.max().values)
+        norm_sample = None
+        norm_clim = None
 
     # Symmetric range for differences
     diff_max_sample = max(abs(diff_sample.min().values), abs(diff_sample.max().values))
@@ -255,21 +278,40 @@ def plot_prediction_comparison(
     ]
     data_row1 = [y_test_sample, y_pred_sample, diff_sample]
     cmaps_row1 = [cmap, cmap, diff_cmap]
-    vmins_row1 = [vmin_sample, vmin_sample, -diff_max_sample]
-    vmaxs_row1 = [vmax_sample, vmax_sample, diff_max_sample]
+    norms_row1 = [norm_sample, norm_sample, None]
 
-    for col, (title, data, cmap_i, vmin_i, vmax_i) in enumerate(
-        zip(titles_row1, data_row1, cmaps_row1, vmins_row1, vmaxs_row1)
+    for col, (title, data, cmap_i, norm_i) in enumerate(
+        zip(titles_row1, data_row1, cmaps_row1, norms_row1)
     ):
         ax = fig.add_subplot(gs[0, col], projection=projection)
-        im = data.plot(
-            ax=ax,
-            transform=ccrs.PlateCarree(),
-            cmap=cmap_i,
-            vmin=vmin_i,
-            vmax=vmax_i,
-            add_colorbar=False,
-        )
+        
+        if col < 2:  # Target and Prediction
+            if norm_i is not None:
+                im = data.plot(
+                    ax=ax,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap_i,
+                    norm=norm_i,
+                    add_colorbar=False,
+                )
+            else:
+                im = data.plot(
+                    ax=ax,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap_i,
+                    vmin=vmin_sample,
+                    vmax=vmax_sample,
+                    add_colorbar=False,
+                )
+        else:  # Difference
+            im = data.plot(
+                ax=ax,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap_i,
+                vmin=-diff_max_sample,
+                vmax=diff_max_sample,
+                add_colorbar=False,
+            )
         ax.coastlines()
         ax.set_title(title, fontsize=12, fontweight="bold")
         plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.05, fraction=0.046)
@@ -282,21 +324,40 @@ def plot_prediction_comparison(
     ]
     data_row2 = [y_test_clim, y_pred_clim, diff_clim]
     cmaps_row2 = [cmap, cmap, diff_cmap]
-    vmins_row2 = [vmin_clim, vmin_clim, -diff_max_clim]
-    vmaxs_row2 = [vmax_clim, vmax_clim, diff_max_clim]
+    norms_row2 = [norm_clim, norm_clim, None]
 
-    for col, (title, data, cmap_i, vmin_i, vmax_i) in enumerate(
-        zip(titles_row2, data_row2, cmaps_row2, vmins_row2, vmaxs_row2)
+    for col, (title, data, cmap_i, norm_i) in enumerate(
+        zip(titles_row2, data_row2, cmaps_row2, norms_row2)
     ):
         ax = fig.add_subplot(gs[1, col], projection=projection)
-        im = data.plot(
-            ax=ax,
-            transform=ccrs.PlateCarree(),
-            cmap=cmap_i,
-            vmin=vmin_i,
-            vmax=vmax_i,
-            add_colorbar=False,
-        )
+        
+        if col < 2:  # Target and Prediction
+            if norm_i is not None:
+                im = data.plot(
+                    ax=ax,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap_i,
+                    norm=norm_i,
+                    add_colorbar=False,
+                )
+            else:
+                im = data.plot(
+                    ax=ax,
+                    transform=ccrs.PlateCarree(),
+                    cmap=cmap_i,
+                    vmin=vmin_clim,
+                    vmax=vmax_clim,
+                    add_colorbar=False,
+                )
+        else:  # Difference
+            im = data.plot(
+                ax=ax,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap_i,
+                vmin=-diff_max_clim,
+                vmax=diff_max_clim,
+                add_colorbar=False,
+            )
         ax.coastlines()
         ax.set_title(title, fontsize=12, fontweight="bold")
         plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.05, fraction=0.046)

@@ -1,20 +1,20 @@
 # Data configuration
 data:
-  domain: SA # one of SA, ALPS or NZ
+  domain: ALPS # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
-  var_target: pr # tasmax or pr 
-  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
+  var_target: tasmax # tasmax or pr 
+  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
 
 # Training configuration
 training:
-  batch_size: 8
-  epochs: 1000
-  batches_per_epoch: 10  # set to null to use all data; otherwise set an integer value
-  batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
+  batch_size: 4
+  epochs: 3000
+  batches_per_epoch: 100  # set to null to use all data; otherwise set an integer value
+  batches_per_validation: 25  # set to null to use all data; otherwise set an integer value
   n_critic: 2  # number of discriminator updates per generator update
   generator:
     learning_rate: 0.00005
@@ -41,9 +41,38 @@ training:
 
 # Model configuration
 model:
-  generator_architecture: "diffusion_unet" # "diffusion_unet" or "spategan"
+  architecture: "diffusion_unet" # "diffusion_unet" or "spategan"
+  
+  # Generator architecture configurations
+  generator:
+    diffusion_unet:
+      sample_size: [128, 128]
+      in_channels: 16  # 15 input + 1 noise
+      out_channels: 1
+      layers_per_block: 2
+      block_out_channels: [64, 128, 256, 512, 1024]
+      down_block_types:
+        - "DownBlock2D"
+        - "DownBlock2D"
+        - "DownBlock2D"
+        - "AttnDownBlock2D"
+        - "AttnDownBlock2D"
+      up_block_types:
+        - "AttnUpBlock2D"
+        - "AttnUpBlock2D"
+        - "UpBlock2D"
+        - "UpBlock2D"
+        - "UpBlock2D"
+    # spategan:
+    #   filter_size: 96
+    #   n_input_channels: 15
+    #   n_output_channels: 1
+    #   dropout_seed: 42
+    #   dropout_ratio: 0.2
+  
+  # Legacy fields for backward compatibility
   discriminator_architecture: "spategan" # "unet" or "spategan"
-  filter_size: 128
+  filter_size: 96
   n_input_channels: 15
   n_output_channels: 1
   dropout_seed: 42
@@ -76,6 +105,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 100 # number of epochs between checkpoints
+  checkpoint_frequency: 10 # number of epochs between checkpoints
   map_frequency: 20 # number of epochs between plotting maps
-  diagnostic_frequency: 20 # number of epochs between computing diagnostics
+  diagnostic_frequency: 10 # number of epochs between computing diagnostics

@@ -161,26 +161,16 @@ class GANWrapper(ModelWrapper):
                     output = self.model(sample, timestep).sample
                     return self.activation(output)
 
+            # Get UNet config from generator.diffusion_unet
+            unet_cfg = self.config.model.generator.diffusion_unet
             base_generator = UNet2DModel(
-                sample_size=(128, 128),
-                in_channels=16,  # 15 input + 1 noise
-                out_channels=1,
-                layers_per_block=2,
-                block_out_channels=(64, 128, 256, 512, 1024),
-                down_block_types=(
-                    "DownBlock2D",
-                    "DownBlock2D",
-                    "DownBlock2D",
-                    "AttnDownBlock2D",
-                    "AttnDownBlock2D",
-                ),
-                up_block_types=(
-                    "AttnUpBlock2D",
-                    "AttnUpBlock2D",
-                    "UpBlock2D",
-                    "UpBlock2D",
-                    "UpBlock2D",
-                ),
+                sample_size=tuple(unet_cfg.sample_size),
+                in_channels=unet_cfg.in_channels,
+                out_channels=unet_cfg.out_channels,
+                layers_per_block=unet_cfg.layers_per_block,
+                block_out_channels=tuple(unet_cfg.block_out_channels),
+                down_block_types=tuple(unet_cfg.down_block_types),
+                up_block_types=tuple(unet_cfg.up_block_types),
             )
 
             # Use same activation logic as training script
