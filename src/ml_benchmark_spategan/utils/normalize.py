@@ -1,10 +1,14 @@
 """Utilities for data normalization and denormalization."""
 
+import logging
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import torch
 import xarray as xr
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_predictors(
@@ -238,3 +242,43 @@ def denormalize_predictions(y_pred: torch.Tensor, norm_params: dict) -> torch.Te
         raise NotImplementedError(
             f"Denormalization for '{normalization}' not implemented"
         )
+
+
+def save_normalization_params(norm_params: dict, run_dir: str) -> None:
+    """
+    Save normalization parameters to NetCDF files.
+
+    Args:
+        norm_params: Dictionary containing normalization parameters
+        run_dir: Directory where to save the parameters
+    """
+    run_path = Path(run_dir)
+
+    # Save y normalization parameters (always save raw climatology)
+    if "y_min" in norm_params and "y_max" in norm_params:
+        norm_params["y_min"].to_netcdf(run_path / "y_min.nc")
+        norm_params["y_max"].to_netcdf(run_path / "y_max.nc")
+        logger.info(
+            f"Target normalization parameters (y_min, y_max) saved to {run_dir}"
+        )
+
+    # Save y_min_log and y_max_log for mp1p1_input_m1p1log_target normalization
+    if "y_min_log" in norm_params and "y_max_log" in norm_params:
+        norm_params["y_min_log"].to_netcdf(run_path / "y_min_log.nc")
+        norm_params["y_max_log"].to_netcdf(run_path / "y_max_log.nc")
+        logger.info(
+            f"Log-space normalization parameters (y_min_log, y_max_log) saved to {run_dir}"
+        )
+
+    # Save x normalization parameters (mean/std or min/max, always save all for climatology)
+    if "x_mean" in norm_params and "x_std" in norm_params:
+        norm_params["x_mean"].to_netcdf(run_path / "x_mean.nc")
+        norm_params["x_std"].to_netcdf(run_path / "x_std.nc")
+        logger.info(
+            f"Input normalization parameters (x_mean, x_std) saved to {run_dir}"
+        )
+
+    if "x_min" in norm_params and "x_max" in norm_params:
+        norm_params["x_min"].to_netcdf(run_path / "x_min.nc")
+        norm_params["x_max"].to_netcdf(run_path / "x_max.nc")
+        logger.info(f"Input normalization parameters (x_min, x_max) saved to {run_dir}")

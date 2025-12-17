@@ -29,6 +29,7 @@ from ml_benchmark_spategan.model.spagan2d import (
 from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 from ml_benchmark_spategan.utils.losses import FSSLoss
+from ml_benchmark_spategan.utils.normalize import save_normalization_params
 from ml_benchmark_spategan.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
@@ -101,35 +102,9 @@ def main():
     # update cf in run directory
     cf.save()
 
-    # Save normalization parameters if they exist
-    if "y_min" in norm_params and "y_max" in norm_params:
-        norm_params["y_min"].to_netcdf(f"{cf.logging.run_dir}/y_min.nc")
-        norm_params["y_max"].to_netcdf(f"{cf.logging.run_dir}/y_max.nc")
-        logger.info(
-            f"Target normalization parameters (y_min, y_max) saved to {cf.logging.run_dir}"
-        )
+    # Save normalization parameters
+    save_normalization_params(norm_params, cf.logging.run_dir)
 
-    # Save y_min_log and y_max_log for mp1p1_input_m1p1log_target normalization
-    if "y_min_log" in norm_params and "y_max_log" in norm_params:
-        norm_params["y_min_log"].to_netcdf(f"{cf.logging.run_dir}/y_min_log.nc")
-        norm_params["y_max_log"].to_netcdf(f"{cf.logging.run_dir}/y_max_log.nc")
-        logger.info(
-            f"Log-space normalization parameters (y_min_log, y_max_log) saved to {cf.logging.run_dir}"
-        )
-
-    # Save x normalization parameters (mean/std or min/max)
-    if "x_mean" in norm_params and "x_std" in norm_params:
-        norm_params["x_mean"].to_netcdf(f"{cf.logging.run_dir}/x_mean.nc")
-        norm_params["x_std"].to_netcdf(f"{cf.logging.run_dir}/x_std.nc")
-        logger.info(
-            f"Input normalization parameters (x_mean, x_std) saved to {cf.logging.run_dir}"
-        )
-    elif "x_min" in norm_params and "x_max" in norm_params:
-        norm_params["x_min"].to_netcdf(f"{cf.logging.run_dir}/x_min.nc")
-        norm_params["x_max"].to_netcdf(f"{cf.logging.run_dir}/x_max.nc")
-        logger.info(
-            f"Input normalization parameters (x_min, x_max) saved to {cf.logging.run_dir}"
-        )
     # describe shapes of data
     logger.info("Training data shapes:")
     x_shape, y_shape = dataloader_train.dataset._get_shapes()
