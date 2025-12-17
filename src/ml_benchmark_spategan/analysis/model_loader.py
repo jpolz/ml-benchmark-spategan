@@ -271,24 +271,29 @@ class GANWrapper(ModelWrapper):
         x = x.to(self.device)
 
         with torch.no_grad():
-            # Upscale - use learnable upsampler if available
-            if self.upsampler is not None:
-                x_hr = self.upsampler(x)
-            else:
-                x_hr = self._upscale_nn(x)
-            x_with_noise = self._add_noise_channel(x_hr)
-
-            # Generate
-            timesteps = torch.zeros(x.shape[0], device=self.device)
-
             arch = self.config.model.get("architecture") or self.config.model.get(
                 "generator_architecture"
             )
+
             if arch == "diffusion_unet":
-                # UNetWithActivation wrapper returns the output directly
+                # Diffusion UNet needs upscaled input with noise channel
+                # Upscale - use learnable upsampler if available
+                if self.upsampler is not None:
+                    x_hr = self.upsampler(x)
+                else:
+                    x_hr = self._upscale_nn(x)
+                x_with_noise = self._add_noise_channel(x_hr)
+
+                # Generate
+                timesteps = torch.zeros(x.shape[0], device=self.device)
                 output = self.model(x_with_noise, timesteps)
+
+            elif arch == "spategan":
+                # SpatGAN works directly on 16x16 input, no upscaling or noise
+                output = self.model(x)
+
             else:
-                output = self.model(x_with_noise)
+                raise ValueError(f"Unknown architecture: {arch}")
 
             # Denormalize if needed
             output = self._denormalize(output)

@@ -485,7 +485,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="./analysis/results",
+        default="./results",
         help="Directory to save results",
     )
 
