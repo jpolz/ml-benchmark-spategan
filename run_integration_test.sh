@@ -26,9 +26,9 @@ echo "STEP 1: Training with $CONFIG_FILE"
 echo "======================================================================"
 echo ""
 
-# Run training and capture output
+# Run training and capture both stdout and stderr
 TRAIN_LOG="logs/integration_test_training_$(date +%Y%m%d_%H%M%S).log"
-.venv/bin/python training/training.py --config $CONFIG_FILE | tee $TRAIN_LOG
+.venv/bin/python training/training.py --config $CONFIG_FILE 2>&1 | tee $TRAIN_LOG
 
 # Check if training succeeded
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -37,9 +37,9 @@ if [ ${PIPESTATUS[0]} -ne 0 ]; then
     exit 1
 fi
 
-# Extract the run ID from the training log
-RUN_ID=$(grep "Run ID:" $TRAIN_LOG | head -1 | sed 's/.*Run ID: //' | tr -d ' ')
-RUN_DIR=$(grep "Run directory:" $TRAIN_LOG | head -1 | sed 's/.*Run directory: //' | tr -d ' ')
+# Extract the run ID from the training log (check for both formats)
+RUN_ID=$(grep -E "Run ID:|run_id:" $TRAIN_LOG | head -1 | sed 's/.*Run ID: //' | sed 's/.*run_id: //' | tr -d ' ')
+RUN_DIR=$(grep -E "Run directory:|run_dir:" $TRAIN_LOG | head -1 | sed 's/.*Run directory: //' | sed 's/.*run_dir: //' | tr -d ' ')
 
 if [ -z "$RUN_ID" ]; then
     echo ""

@@ -5,7 +5,7 @@
 data:
   domain: ALPS # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
-  data_path: /home/polz-j/code/ml-benchmark-spategan/data/cordexbench/
+  data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr # tasmax or pr 
   normalization: "mp1p1_input_m1p1log_target"
   num_workers: 2  # Reduced for faster initialization
@@ -45,22 +45,28 @@ training:
 
 # Model configuration - simplified architecture
 model:
-  architecture: "diffusion_unet"
+  architecture: "spategan"
   use_learnable_upsampler: false
   
   generator:
-    diffusion_unet:
-      sample_size: [128, 128]
-      in_channels: 16  # 15 input + 1 noise
-      out_channels: 1
-      layers_per_block: 1
-      block_out_channels: [32, 64]  # Reduced depth for faster training
-      down_block_types:
-        - "DownBlock2D"  # No attention for faster training
-        - "DownBlock2D"
-      up_block_types:
-        - "UpBlock2D"
-        - "UpBlock2D"
+    # diffusion_unet:
+    #   sample_size: [128, 128]
+    #   in_channels: 16  # 15 input + 1 noise
+    #   out_channels: 1
+    #   layers_per_block: 1
+    #   block_out_channels: [32, 64]  # Reduced depth for faster training
+    #   down_block_types:
+    #     - "DownBlock2D"  # No attention for faster training
+    #     - "DownBlock2D"
+    #   up_block_types:
+    #     - "UpBlock2D"
+    #     - "UpBlock2D"
+    spategan:
+      filter_size: 12
+      n_input_channels: 15
+      n_output_channels: 1
+      dropout_seed: 42
+      dropout_ratio: 0.2
   
   # Legacy fields
   discriminator_architecture: "spategan"
@@ -72,9 +78,9 @@ model:
   generator_finalactivation: null
   
   discriminator:
-    hr_channels: [64, 128, 128]  # Simplified discriminator
-    lr_channels: [64, 64]
-    combined_channels: [128]
+    hr_channels: [32,32,32,32,]  # Simplified discriminator
+    lr_channels: [32,]
+    combined_channels: [64,]
     output_channels: [32, 1]
 
 # Evaluation configuration
