@@ -87,13 +87,36 @@ echo ""
 echo "Command: $CMD"
 echo ""
 
-eval $CMD
+COMPARISON_LOG="logs/integration_test_comparison_$(date +%Y%m%d_%H%M%S).log"
+eval $CMD 2>&1 | tee $COMPARISON_LOG
 
-# Check if comparison succeeded
+# Check if comparison command succeeded
 if [ $? -ne 0 ]; then
     echo ""
-    echo "ERROR: Comparison failed!"
+    echo "ERROR: Comparison command failed!"
     exit 1
+fi
+
+# Check if GAN was successfully loaded and evaluated
+if grep -q "Error loading GAN" $COMPARISON_LOG; then
+    echo ""
+    echo "====================================================================="
+    echo "ERROR: Integration test FAILED!"
+    echo "====================================================================="
+    echo "GAN model could not be loaded from: $RUN_DIR"
+    echo "Check the comparison log for details: $COMPARISON_LOG"
+    echo "====================================================================="
+    exit 1
+fi
+
+# Check if GAN appears in the summary table
+if ! grep -q "$RUN_ID" $COMPARISON_LOG; then
+    echo ""
+    echo "====================================================================="
+    echo "WARNING: GAN model may not have been evaluated properly"
+    echo "====================================================================="
+    echo "Run ID $RUN_ID not found in comparison summary"
+    echo "====================================================================="
 fi
 
 echo ""
