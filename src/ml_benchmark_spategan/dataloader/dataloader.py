@@ -11,11 +11,103 @@ deep learning emulators on the CORDEX Benchmark dataset. The workflow handles:
 For more details on the CORDEX Benchmark dataset properties, see the data notebooks.
 """
 
+from typing import Tuple
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 import xarray as xr
 from torch.utils.data import DataLoader, Dataset
+
+from ..utils.normalize import normalize_predictors
+
+
+def load_cordex_data(
+    domain: str,
+    training_experiment: str,
+    var_target: str = "tasmax",
+    data_path: str = "/bg/fast/aihydromet/cordexbench/",
+    predictand_dtype: str = "float32",
+) -> Tuple[xr.Dataset, xr.Dataset]:
+    """
+    Load CORDEX benchmark data.
+
+    Args:
+        domain: Domain name ('SA', 'NZ', 'ALPS')
+        training_experiment: Experiment name ('ESD_pseudo_reality' or 'Emulator_hist_future')
+        var_target: Target variable ('tasmax' or 'pr')
+        data_path: Path to data directory
+
+    Returns:
+        Tuple of (predictor, predictand) datasets
+    """
+    # Determine period and GCM
+    if training_experiment == "ESD_pseudo_reality":
+        period_training = "1961-1980"
+    elif training_experiment == "Emulator_hist_future":
+        period_training = "1961-1980_2080-2099"
+    else:
+        raise ValueError(f"Invalid experiment: {training_experiment}")
+
+    if domain == "ALPS":
+        gcm_name = "CNRM-CM5"
+    elif domain in ["NZ", "SA"]:
+        gcm_name = "ACCESS-CM2"
+    else:
+        raise ValueError(f"Invalid domain: {domain}")
+
+    # Load predictor
+    predictor_filename = (
+        f"{data_path}/{domain}/{domain}_domain/train/{training_experiment}/"
+        f"predictors/{gcm_name}_{period_training}.nc"
+    )
+    predictor = xr.open_dataset(predictor_filename)
+
+    if domain == "SA":
+        predictor = predictor.drop_vars("time_bnds", errors="ignore")
+
+    # Load predictand
+    predictand_filename = (
+        f"{data_path}/{domain}/{domain}_domain/train/{training_experiment}/"
+        f"target/pr_tasmax_{gcm_name}_{period_training}.nc"
+    )
+    predictand = xr.open_dataset(predictand_filename)
+    predictand = predictand[[var_target]].astype(predictand_dtype)
+
+    return predictor, predictand
+
+
+def split_train_test(
+    predictor: xr.Dataset,
+    predictand: xr.Dataset,
+    training_experiment: str,
+) -> Tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset]:
+    """
+    Split data into train and test sets based on experiment.
+
+    Args:
+        predictor: Predictor dataset
+        predictand: Predictand dataset
+        training_experiment: Experiment name ('ESD_pseudo_reality' or 'Emulator_hist_future')
+
+    Returns:
+        Tuple of (x_train, y_train, x_test, y_test)
+    """
+    if training_experiment == "ESD_pseudo_reality":
+        years_train = list(range(1961, 1975))
+        years_test = list(range(1975, 1981))
+    elif training_experiment == "Emulator_hist_future":
+        years_train = list(range(1961, 1981)) + list(range(2080, 2090))
+        years_test = list(range(2090, 2100))
+    else:
+        raise ValueError(f"Invalid experiment: {training_experiment}")
+
+    x_train = predictor.sel(time=np.isin(predictor["time"].dt.year, years_train))
+    y_train = predictand.sel(time=np.isin(predictand["time"].dt.year, years_train))
+    x_test = predictor.sel(time=np.isin(predictor["time"].dt.year, years_test))
+    y_test = predictand.sel(time=np.isin(predictand["time"].dt.year, years_test))
+
+    return x_train, y_train, x_test, y_test
 
 
 def upscale_nn(x):
@@ -183,142 +275,40 @@ def build_dataloaders(cf):
             - test_dataloader: DataLoader for test data
             - cf: Updated configuration with gcm_name added
     """
-    if cf.data.training_experiment == "ESD_pseudo_reality":
-        period_training = "1961-1980"
-    elif cf.data.training_experiment == "Emulator_hist_future":
-        period_training = "1961-1980_2080-2099"
-    else:
-        raise ValueError("Provide a valid date")
+    # Load data using the new load_cordex_data function
+    predictor, predictand = load_cordex_data(
+        domain=cf.data.domain,
+        training_experiment=cf.data.training_experiment,
+        var_target=cf.data.var_target,
+        data_path=cf.data.data_path,
+    )
 
-    # Set the GCM
+    # Set GCM name in config for backward compatibility
     if cf.data.domain == "ALPS":
         cf.data.gcm_name = "CNRM-CM5"
-    elif (cf.data.domain == "NZ") or (cf.data.domain == "SA"):
+    elif cf.data.domain in ["NZ", "SA"]:
         cf.data.gcm_name = "ACCESS-CM2"
 
-    predictor_filename = f"{cf.data.data_path}/{cf.data.domain}/{cf.data.domain}_domain/train/{cf.data.training_experiment}/predictors/{cf.data.gcm_name}_{period_training}.nc"
-    predictor = xr.open_dataset(predictor_filename)
-    if cf.data.domain == "SA":
-        predictor = predictor.drop_vars("time_bnds")
+    # Split into train and test sets
+    x_train, y_train, x_test, y_test = split_train_test(
+        predictor=predictor,
+        predictand=predictand,
+        training_experiment=cf.data.training_experiment,
+    )
 
-    predictand_filename = f"{cf.data.data_path}/{cf.data.domain}/{cf.data.domain}_domain/train/{cf.data.training_experiment}/target/pr_tasmax_{cf.data.gcm_name}_{period_training}.nc"
-    predictand = xr.open_dataset(predictand_filename)
-    print(cf.data.var_target)
-    predictand = predictand[[cf.data.var_target]].astype("float32")
-    print(predictand)
-
-    if cf.data.training_experiment == "ESD_pseudo_reality":
-        years_train = list(range(1961, 1975))
-        years_test = list(range(1975, 1980 + 1))
-    elif cf.data.training_experiment == "Emulator_hist_future":
-        years_train = list(range(1961, 1980 + 1)) + list(range(2080, 2090))
-        years_test = list(range(2090, 2099 + 1))
-
-    x_train = predictor.sel(time=np.isin(predictor["time"].dt.year, years_train))
-    y_train = predictand.sel(time=np.isin(predictand["time"].dt.year, years_train))
+    # Extract times for temporal dataset
     times_train = x_train["time"].values
 
-    x_test = predictor.sel(time=np.isin(predictor["time"].dt.year, years_test))
-    y_test = predictand.sel(time=np.isin(predictand["time"].dt.year, years_test))
-    times_test = x_test["time"].values
-
-    if cf.data.normalization == "standardization":
-        mean_train = x_train.mean("time")
-        std_train = x_train.std("time")
-        x_mean_train = mean_train
-        x_std_train = std_train
-
-        x_train_stand = (x_train - mean_train) / std_train
-        x_test_stand = (x_test - mean_train) / std_train
-    elif cf.data.normalization == "minmax":
-        min_train = x_train.min("time")
-        max_train = x_train.max("time")
-        x_min_train = min_train
-        x_max_train = max_train
-
-        x_train_stand = (x_train - min_train) / (max_train - min_train)
-        x_test_stand = (x_test - min_train) / (max_train - min_train)
-    elif cf.data.normalization == "std_log_target":
-        mean_train = x_train.mean("time")
-        std_train = x_train.std("time")
-        x_mean_train = mean_train
-        x_std_train = std_train
-
-        x_train_stand = (x_train - mean_train) / std_train
-        x_test_stand = (x_test - mean_train) / std_train
-
-        # log transform y
-        y_train = np.log1p(y_train + 1e-6)
-        y_test = np.log1p(y_test + 1e-6)
-
-    elif cf.data.normalization == "mp1p1_input_m1p1log_target":
-        # x sample normalization
-        min_train = x_train.min("time")
-        max_train = x_train.max("time")
-        x_min_train = min_train
-        x_max_train = max_train
-
-        x_train_stand = (x_train - min_train) / (max_train - min_train)
-        x_train_stand = x_train_stand * 2 - 1
-        x_test_stand = (x_test - min_train) / (max_train - min_train)
-        x_test_stand = x_test_stand * 2 - 1
-
-        # y sample normalization
-        # 1. log transform y
-        y_train = np.log1p(y_train + 1e-6) - np.log1p(1e-6)
-        y_test = np.log1p(y_test + 1e-6) - np.log1p(1e-6)
-
-        # 2. min-max to [-1, 1]
-        y_min_train = y_train.min("time")
-        y_max_train = y_train.max("time")
-
-        y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
-        y_train = y_train * 2 - 1
-
-        y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
-        y_test = y_test * 2 - 1
-
-        # to float32
-        y_train = y_train.astype(np.float32)
-        y_test = y_test.astype(np.float32)
-
-    elif cf.data.normalization == "m1p1_log_target":
-        min_train = x_train.min("time")
-        max_train = x_train.max("time")
-        x_min_train = min_train
-        x_max_train = max_train
-
-        x_train_stand = (x_train - min_train) / (max_train - min_train)
-        x_train_stand = x_train_stand * 2 - 1
-        x_test_stand = (x_test - min_train) / (max_train - min_train)
-        x_test_stand = x_test_stand * 2 - 1
-
-        # log transform y
-        y_train = np.log1p(y_train + 1e-6)
-        y_test = np.log1p(y_test + 1e-6)
-
-    elif cf.data.normalization == "minus1_to_plus1":
-        min_train = x_train.min("time")
-        max_train = x_train.max("time")
-        x_min_train = min_train
-        x_max_train = max_train
-
-        x_train_stand = (x_train - min_train) / (max_train - min_train)
-        x_train_stand = x_train_stand * 2 - 1
-        x_test_stand = (x_test - min_train) / (max_train - min_train)
-        x_test_stand = x_test_stand * 2 - 1
-
-        y_min_train = y_train.min("time")
-        y_max_train = y_train.max("time")
-
-        y_train = (y_train - y_min_train) / (y_max_train - y_min_train)
-        y_train = y_train * 2 - 1
-        y_test = (y_test - y_min_train) / (y_max_train - y_min_train)
-        y_test = y_test * 2 - 1
-
-    else:
-        x_train_stand = x_train
-        x_test_stand = x_test
+    # Normalize predictors and predictands
+    x_train_stand, x_test_stand, y_train, y_test, norm_params_partial = (
+        normalize_predictors(
+            x_train=x_train,
+            x_test=x_test,
+            y_train=y_train,
+            y_test=y_test,
+            normalization=cf.data.normalization,
+        )
+    )
 
     if cf.data.domain == "ALPS":
         spatial_dims = ("x", "y")
@@ -379,38 +369,13 @@ def build_dataloaders(cf):
     )
 
     # Store normalization parameters for denormalization
-    norm_params = {
-        "normalization": cf.data.normalization,
-        "spatial_dims": spatial_dims,
-        "y_test_coords": y_test.coords,  # Store original unstacked coords
-        "spatial_shape": (
-            len(y_test[spatial_dims[0]]),
-            len(y_test[spatial_dims[1]]),
-        ),  # (H, W)
-    }
-
-    # Store x normalization parameters based on normalization method
-    if cf.data.normalization in ["standardization", "std_log_target"]:
-        norm_params["x_mean"] = x_mean_train
-        norm_params["x_std"] = x_std_train
-    elif cf.data.normalization in [
-        "minmax",
-        "minus1_to_plus1",
-        "m1p1_log_target",
-        "mp1p1_input_m1p1log_target",
-    ]:
-        norm_params["x_min"] = x_min_train
-        norm_params["x_max"] = x_max_train
-
-    # Store y normalization parameters
-    if cf.data.normalization == "minus1_to_plus1":
-        norm_params["y_min"] = y_min_train
-        norm_params["y_max"] = y_max_train
-
-    # store log min and max values:
-    if cf.data.normalization == "mp1p1_input_m1p1log_target":
-        norm_params["y_min"] = y_min_train
-        norm_params["y_max"] = y_max_train
+    norm_params = norm_params_partial.copy()
+    norm_params["spatial_dims"] = spatial_dims
+    norm_params["y_test_coords"] = y_test.coords  # Store original unstacked coords
+    norm_params["spatial_shape"] = (
+        len(y_test[spatial_dims[0]]),
+        len(y_test[spatial_dims[1]]),
+    )  # (H, W)
 
     return dataloader_train, test_dataloader, cf, norm_params
 
