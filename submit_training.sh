@@ -27,7 +27,7 @@ echo "Using configuration: $CONFIG_FILE"
 echo ""
 
 # Run training using virtual environment
-.venv/bin/python training/training.py --config $CONFIG_FILE
+.venv/bin/python -m ml_benchmark_spategan.training.training --config $CONFIG_FILE
 
 # Print end time
 echo ""

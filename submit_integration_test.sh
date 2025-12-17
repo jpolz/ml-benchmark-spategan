@@ -36,7 +36,7 @@ echo ""
 
 # Run training and capture both stdout and stderr
 TRAIN_LOG="logs/integration_test_training_${SLURM_JOB_ID}.log"
-.venv/bin/python training/training.py --config $CONFIG_FILE 2>&1 | tee $TRAIN_LOG
+.venv/bin/python -m ml_benchmark_spategan.training.training --config $CONFIG_FILE 2>&1 | tee $TRAIN_LOG
 
 # Check if training succeeded
 if [ ${PIPESTATUS[0]} -ne 0 ]; then

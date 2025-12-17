@@ -35,7 +35,10 @@ from ml_benchmark_spategan.visualization.plot_train import (
     plot_predictions,
 )
 
-sys.path.append("evaluation")
+# Add evaluation directory to path to import diagnostics
+sys.path.insert(
+    0, str(pathlib.Path(__file__).parent.parent.parent.parent / "evaluation")
+)
 import diagnostics
 
 
@@ -53,14 +56,14 @@ def main():
 
     # find project base directory
     project_base = pathlib.Path(os.getcwd())
-    
+
     # load configuration from specified file
     config_path = os.path.join(project_base, args.config)
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
+
     cf = config.load_config_from_yaml(config_path)
-    
+
     # Set up run directory
     run_id = config.generate_run_id()
     run_dir = config.setup_experiment_directory(project_base, run_id)
@@ -86,12 +89,14 @@ def main():
         force=True,
     )
     logger = logging.getLogger(__name__)
-    
+
     logger.info(f"Using configuration file: {config_path}")
     logger.info(f"Run ID: {run_id}")
     logger.info(f"Run directory: {run_dir}")
 
-    dataloader_train, test_dataloader, cf, norm_params = dataloader.build_dataloaders(cf)
+    dataloader_train, test_dataloader, cf, norm_params = dataloader.build_dataloaders(
+        cf
+    )
     # dataloader_train, test_dataloader = dataloader.build_dummy_dataloaders()
     # update cf in run directory
     cf.save()
@@ -133,7 +138,6 @@ def main():
     architecture = cf.model.get("architecture") or cf.model.get(
         "generator_architecture", "spategan"
     )
-
 
     # Initialize upsampler based on config
     use_learnable_upsampler = cf.model.get("use_learnable_upsampler", False)
@@ -259,7 +263,6 @@ def main():
         norm_params=norm_params,
     )
 
-
     # Optimizers
     if upsampler is not None:
         # Include upsampler parameters with generator
@@ -290,7 +293,6 @@ def main():
     # For mixed precision training
     scaler = torch.amp.GradScaler("cuda")
 
-
     ##################
     # Training loop
     ##################
@@ -314,7 +316,6 @@ def main():
     val_iter = iter(test_dataloader)
     x_vis, y_vis = next(val_iter)
     x_vis, y_vis = x_vis.to(device), y_vis.to(device)
-
 
     for epoch in range(cf.training.epochs):
         # Training phase
@@ -502,13 +503,17 @@ def main():
             )
 
             # Compute diagnostics
-            rmse = diagnostics.rmse(true_ds, pred_ds, var=cf.data.var_target, dim="time")
+            rmse = diagnostics.rmse(
+                true_ds, pred_ds, var=cf.data.var_target, dim="time"
+            )
             bias_mean = diagnostics.bias_index(
                 true_ds,
                 pred_ds,
                 index_fn=lambda x, **kw: x[cf.data.var_target].mean("time"),
             )
-            diagnostic_history["rmse"].append(rmse[cf.data.var_target].mean().values.item())
+            diagnostic_history["rmse"].append(
+                rmse[cf.data.var_target].mean().values.item()
+            )
             diagnostic_history["bias_mean"].append(bias_mean.mean().values.item())
             diagnostic_history["epochs"].append(epoch + 1)
 
@@ -549,7 +554,9 @@ def main():
                     x_vis_up = upsampler(x_vis)
                 else:
                     x_vis_up = dataloader.upscale_nn(x_vis)
-                x_vis_up = dataloader.add_noise_channel(x_vis_up)  # add noise to HR or LR?
+                x_vis_up = dataloader.add_noise_channel(
+                    x_vis_up
+                )  # add noise to HR or LR?
             else:
                 x_vis_up = x_vis
             logger.info(f"  Plotting sample {idx}")
@@ -583,7 +590,9 @@ def main():
     )
 
     logger.info("\nTraining complete!")
-    logger.info(f"Best validation L1 loss: {best_val_loss:.6f} at epoch {best_val_epoch}")
+    logger.info(
+        f"Best validation L1 loss: {best_val_loss:.6f} at epoch {best_val_epoch}"
+    )
 
     logger.info(f"\nGAN training complete! Models saved to {cf.logging.run_dir}")
 
