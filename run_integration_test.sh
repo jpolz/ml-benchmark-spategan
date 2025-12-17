@@ -1,26 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=spategan_integration_test
-#SBATCH --partition=sockdolager
-#SBATCH --time=4:00:00
-#SBATCH --qos=sdlgpu
-#SBATCH --output=logs/slurm_integration_test_%j.out
-#SBATCH --error=logs/slurm_integration_test_%j.err
 
-# Integration test submission script
-# This runs both training and comparison in a single job for testing purposes
+# Local integration test script (non-SLURM version)
+# This runs both training and comparison in a single script for testing purposes
 
 # Print job information
 echo "======================================================================"
-echo "INTEGRATION TEST - Training + Comparison Pipeline"
+echo "INTEGRATION TEST - Training + Comparison Pipeline (Local)"
 echo "======================================================================"
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node: $SLURM_NODELIST"
 echo "Start time: $(date)"
-echo "Working directory: $SLURM_SUBMIT_DIR"
+echo "Working directory: $(pwd)"
 echo ""
-
-# Change to project root directory (where this script is located)
-cd $SLURM_SUBMIT_DIR
 
 # Configuration
 CONFIG_FILE="config_integration_test.yml"
@@ -29,13 +18,16 @@ VAR_TARGET="pr"
 EXPERIMENT="ESD_pseudo_reality"
 DATA_PATH="/bg/fast/aihydromet/cordexbench/"
 
+# Create logs directory if it doesn't exist
+mkdir -p logs
+
 echo "======================================================================"
 echo "STEP 1: Training with $CONFIG_FILE"
 echo "======================================================================"
 echo ""
 
 # Run training and capture output
-TRAIN_LOG="logs/integration_test_training_${SLURM_JOB_ID}.log"
+TRAIN_LOG="logs/integration_test_training_$(date +%Y%m%d_%H%M%S).log"
 .venv/bin/python training/training.py --config $CONFIG_FILE | tee $TRAIN_LOG
 
 # Check if training succeeded
@@ -64,7 +56,7 @@ echo "======================================================================"
 echo ""
 
 # Wait a moment for files to sync
-sleep 5
+sleep 2
 
 echo "======================================================================"
 echo "STEP 2: Running comparison (without DeepESD)"
