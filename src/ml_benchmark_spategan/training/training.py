@@ -109,6 +109,14 @@ def main():
             f"Target normalization parameters (y_min, y_max) saved to {cf.logging.run_dir}"
         )
 
+    # Save y_min_log and y_max_log for mp1p1_input_m1p1log_target normalization
+    if "y_min_log" in norm_params and "y_max_log" in norm_params:
+        norm_params["y_min_log"].to_netcdf(f"{cf.logging.run_dir}/y_min_log.nc")
+        norm_params["y_max_log"].to_netcdf(f"{cf.logging.run_dir}/y_max_log.nc")
+        logger.info(
+            f"Log-space normalization parameters (y_min_log, y_max_log) saved to {cf.logging.run_dir}"
+        )
+
     # Save x normalization parameters (mean/std or min/max)
     if "x_mean" in norm_params and "x_std" in norm_params:
         norm_params["x_mean"].to_netcdf(f"{cf.logging.run_dir}/x_mean.nc")

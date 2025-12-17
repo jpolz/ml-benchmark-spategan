@@ -147,6 +147,8 @@ class GANWrapper(ModelWrapper):
         # Load normalization parameters if they exist
         self.y_min = None
         self.y_max = None
+        self.y_min_log = None
+        self.y_max_log = None
         self._load_normalization()
 
     def _load_generator(self):
@@ -201,10 +203,16 @@ class GANWrapper(ModelWrapper):
 
         ymin_path = self.run_dir / "y_min.nc"
         ymax_path = self.run_dir / "y_max.nc"
+        ymin_log_path = self.run_dir / "y_min_log.nc"
+        ymax_log_path = self.run_dir / "y_max_log.nc"
 
         if ymin_path.exists() and ymax_path.exists():
             self.y_min = xr.open_dataarray(ymin_path)
             self.y_max = xr.open_dataarray(ymax_path)
+
+        if ymin_log_path.exists() and ymax_log_path.exists():
+            self.y_min_log = xr.open_dataarray(ymin_log_path)
+            self.y_max_log = xr.open_dataarray(ymax_log_path)
 
     def _upscale_nn(self, x: torch.Tensor) -> torch.Tensor:
         """Upscale input from 16x16 to 128x128."""
@@ -234,8 +242,17 @@ class GANWrapper(ModelWrapper):
             # For mp1p1_input_m1p1log_target:
             # Forward: log1p(y + 1e-6) - log1p(1e-6), then min-max to [-1, 1]
             # Reverse:
-            # 1. Reverse min-max: y_log = ((y_norm + 1) / 2) * (y_max - y_min) + y_min
-            y_log = ((y_pred + 1) / 2) * (y_max - y_min) + y_min
+            # 1. Reverse min-max using y_min_log and y_max_log
+            if self.y_min_log is not None and self.y_max_log is not None:
+                y_min_log = torch.tensor(self.y_min_log.values, device=y_pred.device)
+                y_max_log = torch.tensor(self.y_max_log.values, device=y_pred.device)
+                if y_pred.dim() == 4:  # (batch, 1, H, W)
+                    y_min_log = y_min_log.unsqueeze(0).unsqueeze(0)
+                    y_max_log = y_max_log.unsqueeze(0).unsqueeze(0)
+                y_log = ((y_pred + 1) / 2) * (y_max_log - y_min_log) + y_min_log
+            else:
+                # Fallback if log parameters not found
+                y_log = ((y_pred + 1) / 2) * (y_max - y_min) + y_min
             # 2. Reverse log: y = expm1(y_log + log1p(1e-6)) - 1e-6
             y_denorm = (
                 torch.expm1(
