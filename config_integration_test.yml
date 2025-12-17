@@ -3,9 +3,9 @@
 
 # Data configuration
 data:
-  domain: NZ # one of SA, ALPS or NZ
+  domain: ALPS # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
-  data_path: /bg/fast/aihydromet/cordexbench/
+  data_path: /home/polz-j/code/ml-benchmark-spategan/data/cordexbench/
   var_target: pr # tasmax or pr 
   normalization: "mp1p1_input_m1p1log_target"
   num_workers: 2  # Reduced for faster initialization
