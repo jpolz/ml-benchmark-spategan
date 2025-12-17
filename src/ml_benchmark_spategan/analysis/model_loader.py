@@ -1,6 +1,5 @@
 """Module for loading and wrapping different model types."""
 
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import UNet2DModel
 
-# Add src to path to import utilities
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 
 

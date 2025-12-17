@@ -40,7 +40,7 @@ CHECKPOINT_EPOCHS=(
 )
 
 # Build the command
-CMD=".venv/bin/python analysis/compare_models.py \
+CMD=".venv/bin/python -m ml_benchmark_spategan.analysis.compare_models \
     --domain $DOMAIN \
     --var-target $VAR_TARGET \
     --experiment $EXPERIMENT \

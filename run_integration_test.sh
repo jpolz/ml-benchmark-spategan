@@ -67,7 +67,7 @@ echo ""
 OUTPUT_DIR="./analysis/results/integration_test_$(date +%Y%m%d_%H%M)"
 
 # Build the comparison command without DeepESD
-CMD=".venv/bin/python analysis/compare_models.py \
+CMD=".venv/bin/python -m ml_benchmark_spategan.analysis.compare_models \
     --domain $DOMAIN \
     --var-target $VAR_TARGET \
     --experiment $EXPERIMENT \

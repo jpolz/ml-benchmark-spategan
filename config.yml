@@ -37,7 +37,7 @@ training:
   fss_loss: False # mainly for precip
   loss_weights:
     l1: 1.0
-    gan: 0.05
+    gan: 0.0
     fss: 0.0
 
 # Model configuration
