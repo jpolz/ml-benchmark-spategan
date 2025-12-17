@@ -1,8 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=compare_models
+#SBATCH --job-name=spategan_comp
 #SBATCH --partition=ccgp
-#SBATCH --time=4:00:00
+##SBATCH --partition=grace
+##SBATCH --partition=sockdolager
+#SBATCH --time=24:00:00
+#SBATCH --exclusive
 #SBATCH --qos=nvgpu
+##SBATCH --qos=sdlgpu
 #SBATCH --output=logs/slurm_compare_%j.out
 #SBATCH --error=logs/slurm_compare_%j.err
 
@@ -17,22 +21,22 @@ echo ""
 cd $SLURM_SUBMIT_DIR
 
 # Configuration
-DOMAIN="SA"
-VAR_TARGET="tasmax" # tasmax or pr
+DOMAIN="NZ"
+VAR_TARGET="pr" # tasmax or pr
 EXPERIMENT="ESD_pseudo_reality"
 DATA_PATH="/bg/fast/aihydromet/cordexbench/"
-DEEPESD_MODEL="./training/models/model.pt"
+DEEPESD_MODEL="./training/models/DeepESD_pr_NZ.pt"
 OUTPUT_DIR="./analysis/results/comparison_$(date +%Y%m%d_%H%M)"
 
 # GAN runs to compare (modify this list as needed)
 GAN_RUNS=(
-    "./runs/20251216_0233_taxi6ckr"
+    "./runs/20251217_0440_nuo472h5"
 )
 
 # Optional: Checkpoint epochs to load (one per run, or leave empty for final models)
 # If specified, must have same length as GAN_RUNS
 CHECKPOINT_EPOCHS=(
-    1000
+    60
 )
 
 # Build the command

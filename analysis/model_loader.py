@@ -1,5 +1,6 @@
 """Module for loading and wrapping different model types."""
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import UNet2DModel
+
+# Add src to path to import utilities
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 
 
 class ModelWrapper:
@@ -129,6 +134,17 @@ class GANWrapper(ModelWrapper):
         self.model.to(self.device)
         self.model.eval()
 
+        # Load upsampler if it exists in checkpoint
+        self.upsampler = None
+        if "upsampler_state_dict" in checkpoint:
+            # Recreate the upsampler architecture with correct number of input channels
+            n_input_channels = self.config.model.get("n_input_channels", 15)
+            self.upsampler = LearnableUpsampler(in_channels=n_input_channels).to(
+                self.device
+            )
+            self.upsampler.load_state_dict(checkpoint["upsampler_state_dict"])
+            self.upsampler.eval()
+
         self.checkpoint_epoch = checkpoint.get("epoch", checkpoint_epoch)
 
         # Load normalization parameters if they exist
@@ -161,7 +177,7 @@ class GANWrapper(ModelWrapper):
                     output = self.model(sample, timestep).sample
                     return self.activation(output)
 
-            # Get UNet config from generator.diffusion_unet
+            # Get UNet config from new structure
             unet_cfg = self.config.model.generator.diffusion_unet
             base_generator = UNet2DModel(
                 sample_size=tuple(unet_cfg.sample_size),
@@ -255,8 +271,11 @@ class GANWrapper(ModelWrapper):
         x = x.to(self.device)
 
         with torch.no_grad():
-            # Upscale and add noise
-            x_hr = self._upscale_nn(x)
+            # Upscale - use learnable upsampler if available
+            if self.upsampler is not None:
+                x_hr = self.upsampler(x)
+            else:
+                x_hr = self._upscale_nn(x)
             x_with_noise = self._add_noise_channel(x_hr)
 
             # Generate

@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=spategan_train
 ##SBATCH --partition=ccgp
+##SBATCH --partition=grace
 #SBATCH --partition=sockdolager
 #SBATCH --time=24:00:00
 #SBATCH --exclusive
@@ -19,8 +20,14 @@ echo ""
 # Change to project root directory (where this script is located)
 cd $SLURM_SUBMIT_DIR
 
+# Configuration file (can be changed to use different configs)
+CONFIG_FILE="config.yml"
+
+echo "Using configuration: $CONFIG_FILE"
+echo ""
+
 # Run training using virtual environment
-.venv/bin/python training/training_v2.py
+.venv/bin/python training/training.py --config $CONFIG_FILE
 
 # Print end time
 echo ""

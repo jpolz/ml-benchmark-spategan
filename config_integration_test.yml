@@ -1,0 +1,93 @@
+# Minimal configuration for integration testing
+# This config is designed to run quickly for testing the full pipeline
+
+# Data configuration
+data:
+  domain: NZ # one of SA, ALPS or NZ
+  training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
+  data_path: /bg/fast/aihydromet/cordexbench/
+  var_target: pr # tasmax or pr 
+  normalization: "mp1p1_input_m1p1log_target"
+  num_workers: 2  # Reduced for faster initialization
+  t_past: 0
+  t_future: 0
+
+# Training configuration - minimal settings for quick testing
+training:
+  batch_size: 2  # Reduced batch size for faster epochs
+  ensemble_size: 1
+  epochs: 10  # Minimal number of epochs for integration test
+  batches_per_epoch: 5  # Very small number for quick runs
+  batches_per_validation: 5  # Reduced validation batches
+  n_critic: 2
+  generator:
+    learning_rate: 0.0001
+    optimizer: "AdamW"
+    scheduler: null
+    beta1: 0.0
+    beta2: 0.999
+    weight_decay: 0.0001
+  discriminator:
+    learning_rate: 0.001
+    optimizer: "AdamW"
+    scheduler: null
+    beta1: 0.0
+    beta2: 0.999
+    weight_decay: 0.0001
+  early_stopping: false  # Disable for predictable test duration
+  patience: 10
+  checkpoint_dir: "checkpoints"
+  fss_loss: False
+  loss_weights:
+    l1: 1.0
+    gan: 0.05
+    fss: 0.0
+
+# Model configuration - simplified architecture
+model:
+  architecture: "diffusion_unet"
+  use_learnable_upsampler: false
+  
+  generator:
+    diffusion_unet:
+      sample_size: [128, 128]
+      in_channels: 16  # 15 input + 1 noise
+      out_channels: 1
+      layers_per_block: 1
+      block_out_channels: [32, 64]  # Reduced depth for faster training
+      down_block_types:
+        - "DownBlock2D"  # No attention for faster training
+        - "DownBlock2D"
+      up_block_types:
+        - "UpBlock2D"
+        - "UpBlock2D"
+  
+  # Legacy fields
+  discriminator_architecture: "spategan"
+  filter_size: 64  # Reduced filter size
+  n_input_channels: 15
+  n_output_channels: 1
+  dropout_seed: 42
+  dropout_ratio: 0.2
+  generator_finalactivation: null
+  
+  discriminator:
+    hr_channels: [64, 128, 128]  # Simplified discriminator
+    lr_channels: [64, 64]
+    combined_channels: [128]
+    output_channels: [32, 1]
+
+# Evaluation configuration
+evaluation:
+  metrics: ["rmse"]
+  output_dir: "results"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  log_dir: "logs"
+  wandb: false
+  log_frequency: 5  # Log less frequently
+  checkpoint_frequency: 10  # Save checkpoints every 10 epochs
+  map_frequency: 10
+  diagnostic_frequency: 10

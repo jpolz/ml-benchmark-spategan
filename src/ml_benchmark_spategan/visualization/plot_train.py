@@ -2,11 +2,11 @@ import math
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from matplotlib import gridspec
-import matplotlib.colors as mcolors
-import numpy as np
 
 
 def plot_losses(loss_train, loss_test, cf):
@@ -20,7 +20,9 @@ def plot_losses(loss_train, loss_test, cf):
     plt.close()
 
 
-def plot_adversarial_losses(loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf):
+def plot_adversarial_losses(
+    loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf
+):
     """
     Plot GAN training losses including generator, discriminator, and validation.
     """
@@ -151,13 +153,13 @@ def plot_predictions(
     y = y_batch[sample_idx : sample_idx + 1]
 
     with torch.no_grad():
-        match cf.model.generator_architecture:
+        match cf.model.architecture:
             case "spategan":
                 y_pred = generator(x)
             case "diffusion_unet":
                 y_pred = generator(x, torch.zeros([1]).to(device))
             case _:
-                raise ValueError(f"Invalid option: {cf.model.generator_architecture}")
+                raise ValueError(f"Invalid option: {cf.model.architecture}")
 
     # Denormalize if norm_params provided
     if norm_params is not None:
@@ -183,10 +185,10 @@ def plot_predictions(
     y = ensure_image_tensor(y)
     y_pred = ensure_image_tensor(y_pred)
 
-    # numpy versions
-    x_np = x.cpu().numpy()[0]  # (C, H, W)
-    y_np = y.cpu().numpy()[0, 0]  # (H, W)
-    y_pred_np = y_pred.cpu().numpy()[0, 0]
+    # numpy versions - detach first to avoid gradient errors
+    x_np = x.detach().cpu().numpy()[0]  # (C, H, W)
+    y_np = y.detach().cpu().numpy()[0, 0]  # (H, W)
+    y_pred_np = y_pred.detach().cpu().numpy()[0, 0]
 
     # Calculate common vmin/vmax for true and predicted fine-scale images
     # For precipitation, set vmin slightly above 0 so 0 values use the white color

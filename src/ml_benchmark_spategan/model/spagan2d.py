@@ -441,21 +441,21 @@ def train_gan_step(
         with amp.autocast("cuda"):
             ## generate multiple ensemble prediction-
             # Generator outputs flattened predictions, reshape to 2D
-            match config.model.generator_architecture:
+            match config.model.architecture:
                 case "spategan":
                     gen_outputs = [
-                        generator(input_image).view(-1, 1, 128, 128) for _ in range(3)
+                        generator(input_image).view(-1, 1, 128, 128) for _ in range(config.training.ensemble_size)
                     ]
                 case "diffusion_unet":
                     gen_outputs = [
                         generator(add_noise_channel(input_image_hr), timesteps).view(
                             -1, 1, 128, 128
                         )
-                        for _ in range(3)
+                        for _ in range(config.training.ensemble_size)
                     ]
                 case _:
                     raise ValueError(
-                        f"Invalid option: {config.model.generator_architecture}"
+                        f"Invalid option: {config.model.architecture}"
                     )
 
             gen_ensemble = torch.cat(gen_outputs, dim=1)
@@ -463,8 +463,8 @@ def train_gan_step(
 
             # calculate ensemble mean
             gen_ensemble_mean = (
-                gen_ensemble[:, 0:1] + gen_ensemble[:, 1:2] + gen_ensemble[:, 2:3]
-            ) / 3
+                torch.mean(gen_ensemble, dim=1, keepdim=True)
+            )
 
             # Classify all fake batch with D
             if condition_separate_channels:
@@ -484,7 +484,7 @@ def train_gan_step(
             
             l1loss = nn.L1Loss()(gen_ensemble_mean, target)
             
-            if config.training.fss_loss == True:
+            if config.training.fss_loss:
                 fss_loss = fss_criterion(
                     gen_ensemble, target
                 )
@@ -515,7 +515,7 @@ def train_gan_step(
     else:
         # Generate prediction for discriminator training without updating generator
         with torch.no_grad():
-            match config.model.generator_architecture:
+            match config.model.architecture:
                 case "spategan":
                     pred_log = generator(input_image).view(-1, 1, 128, 128)
                 case "diffusion_unet":
@@ -524,7 +524,7 @@ def train_gan_step(
                     ).view(-1, 1, 128, 128)
                 case _:
                     raise ValueError(
-                        f"Invalid option: {config.model.generator_architecture}"
+                        f"Invalid option: {config.model.architecture}"
                     )
 
     ####################

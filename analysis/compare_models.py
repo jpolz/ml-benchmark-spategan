@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 import cartopy.crs as ccrs
+import matplotlib.colors as mcolors
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 import numpy as np
 import torch
 import xarray as xr
@@ -35,6 +35,7 @@ def evaluate_model(
     model_wrapper,
     test_loader: DataLoader,
     y_test: xr.Dataset,
+    y_train: xr.Dataset,
     var_target: str,
     domain: str,
     model_name: str = "Model",
@@ -46,6 +47,7 @@ def evaluate_model(
         model_wrapper: Model wrapper instance
         test_loader: DataLoader for test data
         y_test: Test target data (xarray)
+        y_train: Training target data (xarray) for climatology
         var_target: Target variable name
         domain: Domain name
         model_name: Name for logging
@@ -103,10 +105,23 @@ def evaluate_model(
     corr = xr.corr(y_pred[var_target], y_test[var_target], dim="time")
     metrics["mean_correlation"] = float(corr.mean().values.item())
 
+    # Anomaly Correlation (subtract climatology from training data)
+    y_train_clim = y_train[var_target].mean(dim="time")
+    y_test_anom = y_test[var_target] - y_train_clim
+    y_pred_anom = y_pred[var_target] - y_train_clim
+    # compute correlation in space
+    anom_corr = xr.corr(y_pred_anom, y_test_anom, dim=spatial_dims)
+    metrics["mean_anomaly_correlation"] = float(anom_corr.mean().values.item())
+
     # Quantiles (95th percentile)
     q95_pred = y_pred[var_target].quantile(0.95, dim="time")
     q95_test = y_test[var_target].quantile(0.95, dim="time")
     metrics["q95_bias"] = float((q95_pred - q95_test).mean().values.item())
+
+    # Quantiles (98th percentile)
+    q98_pred = y_pred[var_target].quantile(0.98, dim="time")
+    q98_test = y_test[var_target].quantile(0.98, dim="time")
+    metrics["q98_bias"] = float((q98_pred - q98_test).mean().values.item())
 
     # Standard deviation ratio
     std_pred = y_pred[var_target].std(dim="time")
@@ -121,7 +136,9 @@ def evaluate_model(
     print(f"Mean Bias: {metrics['mean_bias']:.4f}")
     print(f"Mean MAE: {metrics['mean_mae']:.4f}")
     print(f"Mean Correlation: {metrics['mean_correlation']:.4f}")
+    print(f"Mean Anomaly Correlation: {metrics['mean_anomaly_correlation']:.4f}")
     print(f"Q95 Bias: {metrics['q95_bias']:.4f}")
+    print(f"Q98 Bias: {metrics['q98_bias']:.4f}")
     print(f"Std Ratio: {metrics['std_ratio']:.4f}")
 
     return {
@@ -216,9 +233,23 @@ def plot_prediction_comparison(
     elif var_target == "pr":
         # Use better colormap for precipitation with log scale
         # WhiteBlueGreenYellowRed scheme from NCL
-        colors_pr = ['#FFFFFF', '#E0F0FF', '#B3D9FF', '#66B3FF', '#3399FF',
-                     '#00FF00', '#66FF66', '#99FF33', '#CCFF00', '#FFFF00',
-                     '#FFCC00', '#FF9900', '#FF6600', '#FF3300', '#CC0000']
+        colors_pr = [
+            "#FFFFFF",
+            "#E0F0FF",
+            "#B3D9FF",
+            "#66B3FF",
+            "#3399FF",
+            "#00FF00",
+            "#66FF66",
+            "#99FF33",
+            "#CCFF00",
+            "#FFFF00",
+            "#FFCC00",
+            "#FF9900",
+            "#FF6600",
+            "#FF3300",
+            "#CC0000",
+        ]
         cmap = mcolors.LinearSegmentedColormap.from_list("precipitation", colors_pr)
         diff_cmap = "BrBG"
         use_log_scale = True
@@ -253,9 +284,10 @@ def plot_prediction_comparison(
         vmax_sample = max(y_test_sample.max().values, y_pred_sample.max().values)
         vmin_clim = min_threshold
         vmax_clim = max(y_test_clim.max().values, y_pred_clim.max().values)
-        
+
         # Use LogNorm for precipitation
         from matplotlib.colors import LogNorm
+
         norm_sample = LogNorm(vmin=vmin_sample, vmax=vmax_sample)
         norm_clim = LogNorm(vmin=vmin_clim, vmax=vmax_clim)
     else:
@@ -284,7 +316,7 @@ def plot_prediction_comparison(
         zip(titles_row1, data_row1, cmaps_row1, norms_row1)
     ):
         ax = fig.add_subplot(gs[0, col], projection=projection)
-        
+
         if col < 2:  # Target and Prediction
             if norm_i is not None:
                 im = data.plot(
@@ -330,7 +362,7 @@ def plot_prediction_comparison(
         zip(titles_row2, data_row2, cmaps_row2, norms_row2)
     ):
         ax = fig.add_subplot(gs[1, col], projection=projection)
-        
+
         if col < 2:  # Target and Prediction
             if norm_i is not None:
                 im = data.plot(
@@ -509,7 +541,13 @@ def main():
             device=device,
         )
         results["DeepESD"] = evaluate_model(
-            deepesd, test_loader, y_test, args.var_target, args.domain, "DeepESD"
+            deepesd,
+            test_loader,
+            y_test,
+            y_train,
+            args.var_target,
+            args.domain,
+            "DeepESD",
         )
     else:
         print(f"\nWarning: DeepESD model not found at {args.deepesd_model}")
@@ -579,20 +617,26 @@ def main():
                     device=device,
                 )
                 results[model_name] = evaluate_model(
-                    gan, test_loader, y_test, args.var_target, args.domain, model_name
+                    gan,
+                    test_loader,
+                    y_test,
+                    y_train,
+                    args.var_target,
+                    args.domain,
+                    model_name,
                 )
             except Exception as e:
                 print(f"Error loading GAN from {run_dir}: {e}")
                 continue
 
     # Print summary
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 95)
     print("SUMMARY")
-    print("=" * 80)
+    print("=" * 95)
     print(
-        f"{'Model':<30} | {'RMSE':<8} | {'MAE':<8} | {'Corr':<6} | {'Bias':<8} | {'StdRatio':<8}"
+        f"{'Model':<30} | {'RMSE':<8} | {'MAE':<8} | {'Corr':<6} | {'AnoCorr':<7} | {'Bias':<8} | {'StdRatio':<8}"
     )
-    print("-" * 80)
+    print("-" * 95)
     for model_name, result in results.items():
         metrics = result["metrics"]
         print(
@@ -600,10 +644,11 @@ def main():
             f"{metrics['mean_rmse']:8.4f} | "
             f"{metrics['mean_mae']:8.4f} | "
             f"{metrics['mean_correlation']:6.4f} | "
+            f"{metrics['mean_anomaly_correlation']:7.4f} | "
             f"{metrics['mean_bias']:8.4f} | "
             f"{metrics['std_ratio']:8.4f}"
         )
-    print("=" * 80)
+    print("=" * 95)
 
     # Create PSD comparison plot
     if len(results) > 0:
