@@ -58,7 +58,7 @@ from ml_benchmark_spategan.model.registry import create_discriminator, create_ge
 from ml_benchmark_spategan.training.gan_training import train_gan_step
 from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-from ml_benchmark_spategan.utils.losses import FSSLoss
+from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
 from ml_benchmark_spategan.utils.normalize import save_normalization_params
 from ml_benchmark_spategan.visualization.plot_train import (
     plot_adversarial_losses,
@@ -72,6 +72,147 @@ sys.path.insert(
 )
 import diagnostics
 
+
+def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, epoch):
+    """
+    Compute diagnostic metrics from predictions and ground truth.
+
+    Args:
+        y_pred_all: Concatenated predictions tensor (all test batches)
+        y_true_all: Concatenated ground truth tensor (all test batches)
+        norm_params: Normalization parameters dictionary
+        cf: Configuration object
+        mean_fss_test: Mean FSS test loss for this epoch
+        epoch: Current epoch number
+
+    Returns:
+        dict: Dictionary of diagnostic metrics
+    """
+    logger = logging.getLogger(__name__)
+
+    # Convert to xarray with denormalization
+    pred_ds, true_ds = predictions_to_xarray(
+        y_pred_all, y_true_all, norm_params, var_name=cf.data.var_target
+    )
+
+    # Compute diagnostics
+    rmse = diagnostics.rmse(true_ds, pred_ds, var=cf.data.var_target, dim="time")
+    bias_mean = diagnostics.bias_index(
+        true_ds,
+        pred_ds,
+        index_fn=lambda x, **kw: x[cf.data.var_target].mean("time"),
+    )
+    bias_q95 = diagnostics.bias_index(
+        true_ds,
+        pred_ds,
+        index_fn=lambda x, **kw: x[cf.data.var_target].quantile(0.95, dim="time"),
+    )
+    bias_q98 = diagnostics.bias_index(
+        true_ds,
+        pred_ds,
+        index_fn=lambda x, **kw: x[cf.data.var_target].quantile(0.98, dim="time"),
+    )
+    std_ratio = diagnostics.ratio_index(
+        true_ds,
+        pred_ds,
+        index_fn=lambda x, **kw: x[cf.data.var_target].std("time"),
+    )
+
+    # Mean Absolute Error
+    mae = np.abs(pred_ds[cf.data.var_target] - true_ds[cf.data.var_target]).mean("time")
+
+    # Pearson correlation
+    correlation = xr.corr(
+        pred_ds[cf.data.var_target],
+        true_ds[cf.data.var_target],
+        dim="time",
+    )
+
+    spatial_dims = norm_params["spatial_dims"]
+    # Anomaly correlation (after removing climatology)
+    pred_anomaly = pred_ds[cf.data.var_target] - pred_ds[cf.data.var_target].mean(
+        "time"
+    )
+    true_anomaly = true_ds[cf.data.var_target] - true_ds[cf.data.var_target].mean(
+        "time"
+    )
+    anomaly_correlation = xr.corr(pred_anomaly, true_anomaly, dim=spatial_dims)
+
+    # Build diagnostics dictionary with spatially-averaged values
+    diagnostics_dict = {
+        "rmse": rmse[cf.data.var_target].mean().values.item(),
+        "bias_mean": bias_mean.mean().values.item(),
+        "bias_q95": bias_q95.mean().values.item(),
+        "bias_q98": bias_q98.mean().values.item(),
+        "std_ratio": std_ratio.mean().values.item(),
+        "mae": mae.mean().values.item(),
+        "correlation": correlation.mean().values.item(),
+        "anomaly_correlation": anomaly_correlation.mean().values.item(),
+        "fss": mean_fss_test,
+        "epoch": epoch,
+    }
+
+    # Log key diagnostics
+    logger.info(f"  RMSE (spatial mean): {diagnostics_dict['rmse']:.4f}")
+    logger.info(f"  Bias Mean (spatial mean): {diagnostics_dict['bias_mean']:.4f}")
+    logger.info(f"  Bias Q95 (spatial mean): {diagnostics_dict['bias_q95']:.4f}")
+    logger.info(f"  Std Ratio (spatial mean): {diagnostics_dict['std_ratio']:.4f}")
+    logger.info(f"  Correlation (spatial mean): {diagnostics_dict['correlation']:.4f}")
+
+    return diagnostics_dict
+
+def setup_optimizers(cf, generator, discriminator, upsampler, device):
+    """Set up optimizers for generator and discriminator based on config."""
+    # Optimizers
+    if upsampler is not None:
+        # Include upsampler parameters with generator
+        gen_params = list(generator.parameters()) + list(upsampler.parameters())
+    else:
+        gen_params = generator.parameters()
+
+    if cf.training.generator.optimizer == "AdamW":
+        gen_opt = torch.optim.AdamW(
+            gen_params,
+            lr=cf.training.generator.learning_rate,
+            betas=(
+                cf.training.generator.beta1,
+                cf.training.generator.beta2,
+            ),
+            weight_decay=cf.training.generator.weight_decay,
+        )
+    elif cf.training.generator.optimizer == "Adam":
+        gen_opt = torch.optim.Adam(
+            gen_params,
+            lr=cf.training.generator.learning_rate,
+            betas=(
+                cf.training.generator.beta1,
+                cf.training.generator.beta2,
+            ),
+            weight_decay=cf.training.generator.weight_decay,
+        )
+    
+    if cf.training.discriminator.optimizer == "AdamW":
+        disc_opt = torch.optim.AdamW(
+            discriminator.parameters(),
+            lr=cf.training.discriminator.learning_rate,
+            betas=(
+                cf.training.discriminator.beta1,
+                cf.training.discriminator.beta2,
+            ),
+            weight_decay=cf.training.discriminator.weight_decay,
+        )
+    elif cf.training.discriminator.optimizer == "Adam":
+        disc_opt = torch.optim.Adam(
+            discriminator.parameters(),
+            lr=cf.training.discriminator.learning_rate,
+            betas=(
+                cf.training.discriminator.beta1,
+                cf.training.discriminator.beta2,
+            ),
+            weight_decay=cf.training.discriminator.weight_decay,
+        )
+    
+    return gen_opt, disc_opt
 
 def main():
     """Main training function."""
@@ -194,31 +335,7 @@ def main():
     )
 
     # Optimizers
-    if upsampler is not None:
-        # Include upsampler parameters with generator
-        gen_params = list(generator.parameters()) + list(upsampler.parameters())
-    else:
-        gen_params = generator.parameters()
-
-    gen_opt = torch.optim.AdamW(
-        gen_params,
-        lr=cf.training.generator.learning_rate,
-        betas=(
-            cf.training.generator.beta1,
-            cf.training.generator.beta2,
-        ),  # todo: try with momentum
-        weight_decay=cf.training.generator.weight_decay,
-    )
-
-    disc_opt = torch.optim.AdamW(
-        discriminator.parameters(),
-        lr=cf.training.discriminator.learning_rate,
-        betas=(
-            cf.training.discriminator.beta1,
-            cf.training.discriminator.beta2,
-        ),  # not using momentum on the disc since it can lead to instability
-        weight_decay=cf.training.discriminator.weight_decay,
-    )
+    gen_opt, disc_opt = setup_optimizers(cf, generator, discriminator, upsampler, device)
 
     # For mixed precision training
     scaler = torch.amp.GradScaler("cuda")
@@ -262,6 +379,10 @@ def main():
         # Training phase
         epoch_gen_losses = []
         epoch_disc_losses = []
+
+        ##################
+        # Train
+        ##################
 
         for batch_idx, (x_batch, y_batch) in tqdm(
             enumerate(dataloader_train), total=len(dataloader_train)
@@ -332,6 +453,10 @@ def main():
         loss_gen_train.append(train_gen_loss)
         loss_disc_train.append(train_disc_loss)
 
+        ##################
+        # Validation
+        ##################
+
         # Validation phase
         generator.eval()
         test_losses = []
@@ -365,14 +490,16 @@ def main():
                             y_pred = generator(x_batch_hr, timesteps)
 
                     loss = nn.L1Loss()(y_pred, y_batch_2d)
-                    fss_test_loss = (
-                        fss_criterion(y_pred, y_batch_2d)
-                        if cf.training.loss_weights.fss > 0
-                        else torch.tensor(0.0)
-                    )
+                    # fss_test_loss = (
+                    #     fss_criterion(y_pred, y_batch_2d)
+                    #     if cf.training.loss_weights.fss > 0
+                    #     else torch.tensor(0.0)
+                    # )
+                    
 
                 test_losses.append(loss.item())
-                fss_test_losses.append(fss_test_loss.item())
+                fss_test_losses.append(0.0)
+                # fss_test_losses.append(fss_test_loss.item())
 
         test_loss = np.mean(test_losses)
         loss_gen_test.append(test_loss)
@@ -400,6 +527,10 @@ def main():
             plot_adversarial_losses(
                 loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf
             )
+
+        ##################
+        # Diagnostics
+        ##################
 
         # Compute diagnostics
         if (epoch + 1) % cf.logging.diagnostic_frequency == 0:
@@ -443,90 +574,18 @@ def main():
             y_pred_all = torch.cat(all_preds, dim=0)
             y_true_all = torch.cat(all_targets, dim=0)
 
-            # Convert to xarray with denormalization
-            pred_ds, true_ds = predictions_to_xarray(
-                y_pred_all, y_true_all, norm_params, var_name=cf.data.var_target
+            # Compute diagnostics using helper function
+            diag_results = compute_diagnostics(
+                y_pred_all, y_true_all, norm_params, cf, mean_fss_test, epoch + 1
             )
 
-            # Compute diagnostics
-            rmse = diagnostics.rmse(
-                true_ds, pred_ds, var=cf.data.var_target, dim="time"
-            )
-            bias_mean = diagnostics.bias_index(
-                true_ds,
-                pred_ds,
-                index_fn=lambda x, **kw: x[cf.data.var_target].mean("time"),
-            )
-            bias_q95 = diagnostics.bias_index(
-                true_ds,
-                pred_ds,
-                index_fn=lambda x, **kw: x[cf.data.var_target].quantile(
-                    0.95, dim="time"
-                ),
-            )
-            bias_q98 = diagnostics.bias_index(
-                true_ds,
-                pred_ds,
-                index_fn=lambda x, **kw: x[cf.data.var_target].quantile(
-                    0.98, dim="time"
-                ),
-            )
-            std_ratio = diagnostics.ratio_index(
-                true_ds,
-                pred_ds,
-                index_fn=lambda x, **kw: x[cf.data.var_target].std("time"),
-            )
+            # Store in history
+            for key, value in diag_results.items():
+                if key == "epoch":
+                    diagnostic_history["epochs"].append(value)
+                else:
+                    diagnostic_history[key].append(value)
 
-            # Mean Absolute Error
-            mae = np.abs(
-                pred_ds[cf.data.var_target] - true_ds[cf.data.var_target]
-            ).mean("time")
-
-            # Pearson correlation
-            correlation = xr.corr(
-                pred_ds[cf.data.var_target],
-                true_ds[cf.data.var_target],
-                dim="time",
-            )
-
-            # Anomaly correlation (after removing climatology)
-            pred_anomaly = pred_ds[cf.data.var_target] - pred_ds[
-                cf.data.var_target
-            ].mean("time")
-            true_anomaly = true_ds[cf.data.var_target] - true_ds[
-                cf.data.var_target
-            ].mean("time")
-            anomaly_correlation = xr.corr(pred_anomaly, true_anomaly, dim="time")
-
-            # Store spatially-averaged diagnostics
-            diagnostic_history["rmse"].append(
-                rmse[cf.data.var_target].mean().values.item()
-            )
-            diagnostic_history["bias_mean"].append(bias_mean.mean().values.item())
-            diagnostic_history["bias_q95"].append(bias_q95.mean().values.item())
-            diagnostic_history["bias_q98"].append(bias_q98.mean().values.item())
-            diagnostic_history["std_ratio"].append(std_ratio.mean().values.item())
-            diagnostic_history["mae"].append(mae.mean().values.item())
-            diagnostic_history["correlation"].append(correlation.mean().values.item())
-            diagnostic_history["anomaly_correlation"].append(
-                anomaly_correlation.mean().values.item()
-            )
-            diagnostic_history["fss"].append(mean_fss_test)
-            diagnostic_history["epochs"].append(epoch + 1)
-
-            logger.info(f"  RMSE (spatial mean): {diagnostic_history['rmse'][-1]:.4f}")
-            logger.info(
-                f"  Bias Mean (spatial mean): {diagnostic_history['bias_mean'][-1]:.4f}"
-            )
-            logger.info(
-                f"  Bias Q95 (spatial mean): {diagnostic_history['bias_q95'][-1]:.4f}"
-            )
-            logger.info(
-                f"  Std Ratio (spatial mean): {diagnostic_history['std_ratio'][-1]:.4f}"
-            )
-            logger.info(
-                f"  Correlation (spatial mean): {diagnostic_history['correlation'][-1]:.4f}"
-            )
             plot_diagnostic_history(diagnostic_history, cf)
 
         # Save checkpoint

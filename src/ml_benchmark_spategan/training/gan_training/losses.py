@@ -1,10 +1,135 @@
-from typing import Dict, List, Union
+"""Configurable loss manager for GAN training."""
+
+from typing import Dict, List, Union, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+
+class GANLossManager:
+    """
+    Manages multiple loss functions with configurable weights for GAN training.
+
+    This class encapsulates all loss computation logic, making it easy to:
+    - Configure loss weights from config
+    - Add new loss functions
+    - Compute weighted combined losses
+    - Track individual loss components
+
+    Args:
+        loss_weights: Dictionary mapping loss names to weights
+        gan_criterion: Loss function for GAN training (e.g., BCEWithLogitsLoss)
+        fss_criterion: FSS loss function (optional)
+        use_fss: Whether to use FSS loss
+    """
+
+    def __init__(
+        self,
+        loss_weights: Dict[str, float],
+        gan_criterion: nn.Module,
+        fss_criterion: Optional[nn.Module] = None,
+        use_fss: bool = False,
+    ):
+        self.weights = loss_weights
+        self.gan_criterion = gan_criterion
+        self.fss_criterion = fss_criterion
+        self.use_fss = use_fss
+        self.l1_loss = nn.L1Loss()
+        self.mse_loss = nn.MSELoss()
+
+    def compute_generator_loss(
+        self,
+        gen_ensemble: torch.Tensor,
+        target: torch.Tensor,
+        disc_fake_output: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Compute combined generator loss.
+
+        Args:
+            gen_ensemble: Generator ensemble outputs (B, N_ensemble, H, W)
+            target: Ground truth (B, 1, H, W)
+            disc_fake_output: Discriminator output on fake samples (optional)
+
+        Returns:
+            Combined loss tensor and dictionary of individual loss components
+        """
+        losses = {}
+        total_loss = 0.0
+
+        # Compute ensemble mean
+        gen_ensemble_mean = gen_ensemble.mean(dim=1, keepdim=True)
+
+        # L1 loss
+        if self.weights.get("l1", 0.0) > 0.0:
+            l1_loss = self.l1_loss(gen_ensemble_mean, target)
+            losses["l1"] = l1_loss.item()
+            total_loss = total_loss + self.weights["l1"] * l1_loss
+
+        # MSE loss
+        if self.weights.get("mse", 0.0) > 0.0:
+            mse_loss = self.mse_loss(gen_ensemble_mean, target)
+            losses["mse"] = mse_loss.item()
+            total_loss = total_loss + self.weights["mse"] * mse_loss
+
+        # GAN loss
+        if self.weights.get("gan", 0.0) > 0.0 and disc_fake_output is not None:
+            # BCE loss: fool discriminator
+            gan_loss = self.gan_criterion(
+                disc_fake_output, torch.ones_like(disc_fake_output)
+            )
+            losses["gan"] = gan_loss.item()
+            total_loss = total_loss + self.weights["gan"] * gan_loss
+
+        # FSS loss
+        if self.use_fss and self.weights.get("fss", 0.0) > 0.0:
+            fss_loss = self.fss_criterion(gen_ensemble, target)
+            losses["fss"] = fss_loss.item()
+            total_loss = total_loss + self.weights["fss"] * fss_loss
+
+        return total_loss, losses
+
+    def compute_discriminator_loss(
+        self,
+        disc_real_output: torch.Tensor,
+        disc_fake_output: torch.Tensor,
+        use_label_smoothing: bool = True,
+    ) -> tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Compute discriminator loss (real + fake).
+
+        Args:
+            disc_real_output: Discriminator output on real samples
+            disc_fake_output: Discriminator output on fake samples
+            use_label_smoothing: Whether to apply label smoothing to real labels
+
+        Returns:
+            Combined loss tensor and dictionary of loss components
+        """
+        # Real loss with optional label smoothing
+        if use_label_smoothing:
+            real_labels = 0.8 + 0.2 * torch.rand_like(disc_real_output)
+        else:
+            real_labels = torch.ones_like(disc_real_output)
+
+        disc_real_loss = self.gan_criterion(disc_real_output, real_labels)
+
+        # Fake loss
+        disc_fake_loss = self.gan_criterion(
+            disc_fake_output, torch.zeros_like(disc_fake_output)
+        )
+
+        total_loss = disc_real_loss + disc_fake_loss
+
+        losses = {
+            "real": disc_real_loss.item(),
+            "fake": disc_fake_loss.item(),
+        }
+
+        return total_loss, losses
 
 class FSSCalculator:
     """

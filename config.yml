@@ -4,7 +4,7 @@ data:
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr # tasmax or pr 
-  normalization: "standardization"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
+  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
@@ -15,10 +15,10 @@ training:
   ensemble_size: 1
   epochs: 500
   batches_per_epoch: null  # set to null to use all data; otherwise set an integer value
-  batches_per_validation: 10  # set to null to use all data; otherwise set an integer value
-  n_critic: 0  # number of discriminator updates per generator update
+  batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
+  n_critic: 1  # number of discriminator updates per generator update
   generator:
-    learning_rate: 0.0001
+    learning_rate: 0.00005
     optimizer: "AdamW"
     scheduler: null
     beta1: 0.0
@@ -36,13 +36,14 @@ training:
   checkpoint_dir: "checkpoints"
   fss_loss: False # mainly for precip
   loss_weights:
-    l1: 1.0
-    gan: 0.0
+    l1: 0.0
+    mse: 1.0
+    gan: 1.0
     fss: 0.0
 
 # Model configuration
 model:
-  architecture: "deepesd" # "diffusion_unet" or "spategan" or "deepesd"
+  architecture: "diffusion_unet" # "diffusion_unet" or "spategan" or "deepesd"
   use_learnable_upsampler: false  # Use learnable conv-based upsampling instead of fixed bilinear
   
   # Generator architecture configurations
@@ -107,6 +108,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 40 # number of epochs between checkpoints
-  map_frequency: 40 # number of epochs between plotting maps
+  checkpoint_frequency: 20 # number of epochs between checkpoints
+  map_frequency: 10 # number of epochs between plotting maps
   diagnostic_frequency: 5 # number of epochs between computing diagnostics

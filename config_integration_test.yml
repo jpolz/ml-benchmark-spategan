@@ -40,6 +40,7 @@ training:
   fss_loss: False
   loss_weights:
     l1: 1.0
+    mse: 0.0
     gan: 0.05
     fss: 0.0
 
