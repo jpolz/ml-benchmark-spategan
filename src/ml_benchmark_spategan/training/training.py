@@ -55,7 +55,7 @@ from tqdm import tqdm
 from ml_benchmark_spategan.config import config
 from ml_benchmark_spategan.dataloader import dataloader
 from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
-from ml_benchmark_spategan.model.spagan2d import train_gan_step
+from ml_benchmark_spategan.training.gan_training import train_gan_step
 from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 from ml_benchmark_spategan.utils.losses import FSSLoss
@@ -431,6 +431,9 @@ def main():
                                 y_pred = torch.flatten(y_pred, start_dim=1)
                             case "diffusion_unet":
                                 y_pred = generator(x_batch_hr, timesteps)
+                                y_pred = torch.flatten(y_pred, start_dim=1)
+                            case "deepesd":
+                                y_pred = generator(x_batch)
                                 y_pred = torch.flatten(y_pred, start_dim=1)
 
                     all_preds.append(y_pred.cpu())

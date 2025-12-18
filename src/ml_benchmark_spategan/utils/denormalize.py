@@ -61,7 +61,7 @@ def predictions_to_xarray(y_pred, y_true, norm_params, var_name="tasmax"):
     coords = norm_params["y_test_coords"]
 
     # Create xarray DataArrays
-    time_coords = np.arange(y_pred_np.shape[0])
+    time_coords = coords["time"] if "time" in coords else np.arange(y_pred_np.shape[0])
 
     pred_da = xr.DataArray(
         y_pred_np,

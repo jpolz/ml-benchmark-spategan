@@ -22,7 +22,7 @@ def create_generator(config, device: torch.device = None):
     )
 
     if architecture == "spategan":
-        from ml_benchmark_spategan.model.spagan2d import Generator
+        from ml_benchmark_spategan.model.generators.spategan import Generator
 
         generator = Generator(config.model).to(device)
 
@@ -32,7 +32,7 @@ def create_generator(config, device: torch.device = None):
         return generator
 
     elif architecture == "diffusion_unet":
-        from ml_benchmark_spategan.model.unet2d import create_unet_generator
+        from ml_benchmark_spategan.model.generators.unet2d import create_unet_generator
 
         unet_cfg = config.model.generator.diffusion_unet
         generator = create_unet_generator(
@@ -51,7 +51,7 @@ def create_generator(config, device: torch.device = None):
         return generator
 
     elif architecture == "deepesd":
-        from ml_benchmark_spategan.model.deepesd import DeepESD
+        from ml_benchmark_spategan.model.generators.deepesd import DeepESD
 
         deepesd_cfg = config.model.generator.deepesd
         generator = DeepESD(
@@ -82,7 +82,7 @@ def create_discriminator(config, device: torch.device = None):
     """
     from diffusers import UNet2DModel
 
-    from ml_benchmark_spategan.model.spagan2d import Discriminator
+    from ml_benchmark_spategan.model.discriminators.spategan_disc import Discriminator
 
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

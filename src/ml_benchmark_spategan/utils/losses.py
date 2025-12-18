@@ -1,8 +1,9 @@
+from typing import Dict, List, Union
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Union, Dict, List
-import numpy as np
 
 
 class FSSCalculator:
@@ -10,13 +11,13 @@ class FSSCalculator:
     Differentiable Fraction Skill Score (FSS) calculator.
 
     Can be used both as evaluation metric and as training loss backend.
-    
+
     Shape conventions (ML style):
     - 4D: (Batch, Channel, Height, Width)
     - 5D: (Batch, Channel, Time, Height, Width)
-    
+
     Ensemble detection:
-    - If obs has 1 channel and fcst has >1 channels, treat fcst channels as 
+    - If obs has 1 channel and fcst has >1 channels, treat fcst channels as
       ensemble members and average them before computing FSS.
     """
 
@@ -35,7 +36,7 @@ class FSSCalculator:
         self.kernel_cache = {}
         self.scales = scales
         self.sharpness = sharpness
-        
+
         # Convert thresholds to tensor for normalization
         if isinstance(thresholds, (list, np.ndarray)):
             thresholds_tensor = torch.tensor(thresholds, dtype=torch.float32)
@@ -43,47 +44,61 @@ class FSSCalculator:
             thresholds_tensor = thresholds.float().detach().clone()
         else:
             raise ValueError(f"Unsupported thresholds type: {type(thresholds)}")
-        
-        print('FSS thresholds before normalization:', thresholds_tensor)
-        
+
+        print("FSS thresholds before normalization:", thresholds_tensor)
+
         # Apply normalization if configured
         if config is not None and config.data.normalization is not None:
-            thresholds_tensor = self._normalize_threshold(thresholds_tensor, config, norm_params)
-        
-        print('FSS thresholds after normalization:', thresholds_tensor)
-        
+            thresholds_tensor = self._normalize_threshold(
+                thresholds_tensor, config, norm_params
+            )
+
+        print("FSS thresholds after normalization:", thresholds_tensor)
+
         # Convert to Python list
         self.thresholds: List[float] = thresholds_tensor.tolist()
-        
-    def _normalize_threshold(self, th: torch.Tensor, config, norm_params) -> torch.Tensor:
+
+    def _normalize_threshold(
+        self, th: torch.Tensor, config, norm_params
+    ) -> torch.Tensor:
         if config.data.normalization == "mp1p1_input_m1p1log_target":
             y_min = norm_params["y_min"][config.data.var_target].mean().values
             y_max = norm_params["y_max"][config.data.var_target].mean().values
-            
+
             th = torch.log1p(th + 1e-6) - torch.log1p(torch.tensor(1e-6))
             th = (th - y_min) / (y_max - y_min)
             th = th * 2 - 1
             return th
-        
+
         elif config.data.normalization == "m1p1_log_target":
             return torch.log1p(th) - 1e-6
-        
+
         elif config.data.normalization == "minus1_to_plus1":
             y_min = norm_params["y_min"][config.data.var_target].mean().values
             y_max = norm_params["y_max"][config.data.var_target].mean().values
-            
+
             th = (th - y_min) / (y_max - y_min)
             th = th * 2 - 1
             return th
-        
-        elif config.data.normalization in ("minmax", "standardization", "log"):
-            raise NotImplementedError(
-                f"Threshold normalization not yet implemented for {config.data.normalization}"
-            )
-        
-        else:
+
+        elif config.data.normalization == "standardization":
+            # For standardization, y is not normalized (stays in original units)
+            # So thresholds should also stay in original units
             return th
-        
+
+        elif config.data.normalization == "minmax":
+            # For minmax, y is not normalized (stays in original units)
+            # So thresholds should also stay in original units
+            return th
+
+        elif config.data.normalization == "log":
+            # Apply log transform to thresholds
+            return torch.log1p(th)
+
+        else:
+            # No normalization or unknown - return thresholds as-is
+            return th
+
     def _soft_threshold(self, x: torch.Tensor, threshold: float) -> torch.Tensor:
         """Apply soft thresholding using sigmoid for differentiability."""
         return torch.sigmoid(self.sharpness * (x - threshold))
@@ -112,7 +127,7 @@ class FSSCalculator:
     ) -> torch.Tensor:
         """
         Compute FSS for a single threshold and window size.
-        
+
         Parameters
         ----------
         fcst : torch.Tensor
@@ -126,7 +141,7 @@ class FSSCalculator:
             Spatial window size for neighborhood averaging
         batch_size : int, optional
             Batch size for processing convolutions
-            
+
         Returns
         -------
         torch.Tensor
@@ -140,7 +155,7 @@ class FSSCalculator:
             fcst = torch.tensor(fcst, dtype=torch.float32, device=self.device)
         else:
             fcst = fcst.to(self.device)
-            
+
         if not isinstance(obs, torch.Tensor):
             obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
         else:
@@ -151,56 +166,76 @@ class FSSCalculator:
 
         fcst_shape = fcst.shape
         obs_shape = obs.shape
-        
+
         # Validate dimensions
         if len(fcst_shape) != len(obs_shape):
             raise ValueError(
                 f"Forecast and observation must have same number of dimensions. "
                 f"Got fcst: {len(fcst_shape)}D, obs: {len(obs_shape)}D"
             )
-        
+
         if len(fcst_shape) == 4:
             # 4D: (Batch, Channel, Height, Width)
             B, C_fcst, H, W = fcst_shape
             _, C_obs, _, _ = obs_shape
-            
+
             # Ensemble mode: fcst has multiple channels, obs has 1 channel
-            ensemble = (C_obs == 1 and C_fcst > 1)
-            
+            ensemble = C_obs == 1 and C_fcst > 1
+
             if ensemble:
                 # Average soft-thresholded forecast over channel/ensemble dimension
-                fcst_proc = self._soft_threshold(fcst, threshold).mean(dim=1, keepdim=True)
+                fcst_proc = self._soft_threshold(fcst, threshold).mean(
+                    dim=1, keepdim=True
+                )
                 with torch.no_grad():
-                    obs_proc = (obs > threshold).to(fcst_proc.dtype)  # Already (B, 1, H, W)
+                    obs_proc = (obs > threshold).to(
+                        fcst_proc.dtype
+                    )  # Already (B, 1, H, W)
             else:
                 # No ensemble: process each channel independently
                 # Reshape to (B*C, 1, H, W) for convolution
-                fcst_proc = self._soft_threshold(fcst, threshold).reshape(B * C_fcst, 1, H, W)
+                fcst_proc = self._soft_threshold(fcst, threshold).reshape(
+                    B * C_fcst, 1, H, W
+                )
                 with torch.no_grad():
-                    obs_proc = (obs > threshold).to(fcst_proc.dtype).reshape(B * C_obs, 1, H, W)
-                    
+                    obs_proc = (
+                        (obs > threshold)
+                        .to(fcst_proc.dtype)
+                        .reshape(B * C_obs, 1, H, W)
+                    )
+
         elif len(fcst_shape) == 5:
             # 5D: (Batch, Channel, Time, Height, Width)
             B, C_fcst, T, H, W = fcst_shape
             _, C_obs, _, _, _ = obs_shape
-            
+
             # Ensemble mode: fcst has multiple channels, obs has 1 channel
-            ensemble = (C_obs == 1 and C_fcst > 1)
-            
+            ensemble = C_obs == 1 and C_fcst > 1
+
             if ensemble:
                 # Average soft-thresholded forecast over channel/ensemble dimension
                 # Result: (B, 1, T, H, W)
-                fcst_soft = self._soft_threshold(fcst, threshold).mean(dim=1, keepdim=True)
+                fcst_soft = self._soft_threshold(fcst, threshold).mean(
+                    dim=1, keepdim=True
+                )
                 # Reshape to (B*T, 1, H, W) for 2D convolution
                 fcst_proc = fcst_soft.reshape(B * T, 1, H, W)
                 with torch.no_grad():
-                    obs_proc = (obs > threshold).to(fcst_proc.dtype).reshape(B * T, 1, H, W)
+                    obs_proc = (
+                        (obs > threshold).to(fcst_proc.dtype).reshape(B * T, 1, H, W)
+                    )
             else:
                 # No ensemble: process each channel and time independently
                 # Reshape to (B*C*T, 1, H, W) for convolution
-                fcst_proc = self._soft_threshold(fcst, threshold).reshape(B * C_fcst * T, 1, H, W)
+                fcst_proc = self._soft_threshold(fcst, threshold).reshape(
+                    B * C_fcst * T, 1, H, W
+                )
                 with torch.no_grad():
-                    obs_proc = (obs > threshold).to(fcst_proc.dtype).reshape(B * C_obs * T, 1, H, W)
+                    obs_proc = (
+                        (obs > threshold)
+                        .to(fcst_proc.dtype)
+                        .reshape(B * C_obs * T, 1, H, W)
+                    )
         else:
             raise ValueError(
                 f"Unsupported tensor shape. Expected 4D (B,C,H,W) or 5D (B,C,T,H,W). "
@@ -218,12 +253,12 @@ class FSSCalculator:
             end = min(start + batch_size, N)
 
             F_frac = F.conv2d(fcst_proc[start:end], kernel, padding=pad)
-            
+
             with torch.no_grad():
                 O_frac = F.conv2d(obs_proc[start:end], kernel, padding=pad)
 
             mse = torch.mean((F_frac - O_frac) ** 2, dim=(2, 3))
-            mse_ref = torch.mean(F_frac ** 2 + O_frac ** 2, dim=(2, 3))
+            mse_ref = torch.mean(F_frac**2 + O_frac**2, dim=(2, 3))
 
             fss = 1.0 - mse / (mse_ref + 1e-8)
             fss_values.append(fss)
@@ -235,7 +270,9 @@ class FSSCalculator:
         if valid.any():
             return fss[valid].mean()
 
-        return torch.tensor(1.0, device=self.device, dtype=fcst.dtype, requires_grad=True)
+        return torch.tensor(
+            1.0, device=self.device, dtype=fcst.dtype, requires_grad=True
+        )
 
     def compute_multi(
         self,
@@ -247,7 +284,7 @@ class FSSCalculator:
         Compute FSS for multiple thresholds and scales.
         """
         results = {}
-        
+
         for th in self.thresholds:
             results[th] = {}
             for scale in self.scales:
@@ -260,15 +297,15 @@ class FSSCalculator:
 class FSSLoss(nn.Module):
     """
     Training-ready FSS loss: loss = 1 - mean(FSS)
-    
+
     Shape conventions (ML style):
     - 4D: (Batch, Channel, Height, Width)
     - 5D: (Batch, Channel, Time, Height, Width)
-    
+
     Ensemble detection:
-    - If obs has 1 channel and fcst has >1 channels, treat fcst channels as 
+    - If obs has 1 channel and fcst has >1 channels, treat fcst channels as
       ensemble members and average them before computing FSS.
-    
+
     """
 
     def __init__(
@@ -295,14 +332,14 @@ class FSSLoss(nn.Module):
     def forward(self, fcst: torch.Tensor, obs: torch.Tensor) -> torch.Tensor:
         """
         Compute FSS loss.
-        
+
         Parameters
         ----------
         fcst : torch.Tensor
             Forecast tensor. Shape: (B, C, H, W) or (B, C, T, H, W)
         obs : torch.Tensor
             Observation/target tensor. Shape: (B, C, H, W) or (B, C, T, H, W)
-            
+
         Returns
         -------
         torch.Tensor
@@ -310,7 +347,7 @@ class FSSLoss(nn.Module):
         """
         # Clone to create independent computational graph branch
         fcst_clone = fcst.clone()
-        
+
         fss_dict = self.calculator.compute_multi(fcst_clone, obs)
 
         fss_values = []
@@ -319,7 +356,7 @@ class FSSLoss(nn.Module):
                 fss_values.append(fss)
 
         fss_stack = torch.stack(fss_values)
-        
+
         loss = 1.0 - fss_stack.mean()
 
         return loss

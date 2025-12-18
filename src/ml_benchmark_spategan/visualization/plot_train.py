@@ -179,6 +179,8 @@ def plot_predictions(
                 y_pred = generator(x)
             case "diffusion_unet":
                 y_pred = generator(x, torch.zeros([1]).to(device))
+            case "deepesd":
+                y_pred = generator(x)
             case _:
                 raise ValueError(f"Invalid option: {cf.model.architecture}")
 
