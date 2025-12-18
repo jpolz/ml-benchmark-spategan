@@ -116,18 +116,11 @@ def upscale_nn(x):
 
 
 def add_noise_channel(x):
+    """Add noise channel. Wrapper for utils.interpolate.add_noise_channel."""
     # x: (B, 15, 128, 128)
-    noise = (
-        torch.randn(
-            x.size(0),  # batch
-            1,  # 1 noise channel
-            x.size(2),  # height = 128
-            x.size(3),  # width = 128
-            device=x.device,  # put noise on same device (GPU or CPU)
-        )
-        * 0.2
-    )
-    return torch.cat([x, noise], dim=1)
+    from ml_benchmark_spategan.utils.interpolate import add_noise_channel as _add_noise
+
+    return _add_noise(x, noise_std=0.2)
 
 
 class EmulationTrainingDataset(Dataset):

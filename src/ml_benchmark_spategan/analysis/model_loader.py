@@ -5,8 +5,6 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from diffusers import UNet2DModel
 
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 
@@ -163,37 +161,12 @@ class GANWrapper(ModelWrapper):
             self.model = Generator(self.config.model)
 
         elif arch == "diffusion_unet":
-            # Match the training script's UNetWithActivation wrapper
-            import torch.nn as nn
-
-            class UNetWithActivation(nn.Module):
-                def __init__(self, base_model, activation):
-                    super().__init__()
-                    self.model = base_model
-                    self.activation = activation
-
-                def forward(self, sample, timestep):
-                    output = self.model(sample, timestep).sample
-                    return self.activation(output)
+            from ml_benchmark_spategan.model.unet2d import create_unet_generator
 
             # Get UNet config from new structure
             unet_cfg = self.config.model.generator.diffusion_unet
-            base_generator = UNet2DModel(
-                sample_size=tuple(unet_cfg.sample_size),
-                in_channels=unet_cfg.in_channels,
-                out_channels=unet_cfg.out_channels,
-                layers_per_block=unet_cfg.layers_per_block,
-                block_out_channels=tuple(unet_cfg.block_out_channels),
-                down_block_types=tuple(unet_cfg.down_block_types),
-                up_block_types=tuple(unet_cfg.up_block_types),
-            )
-
-            # Use same activation logic as training script
             normalization = self.config.data.get("normalization", "minus1_to_plus1")
-            if normalization == "m1p1_log_target":
-                self.model = UNetWithActivation(base_generator, nn.Softplus())
-            else:
-                self.model = UNetWithActivation(base_generator, nn.Identity())
+            self.model = create_unet_generator(unet_cfg, normalization=normalization)
         else:
             raise ValueError(f"Unknown architecture: {arch}")
 
@@ -214,74 +187,31 @@ class GANWrapper(ModelWrapper):
             self.y_min_log = xr.open_dataarray(ymin_log_path)
             self.y_max_log = xr.open_dataarray(ymax_log_path)
 
-    def _upscale_nn(self, x: torch.Tensor) -> torch.Tensor:
-        """Upscale input from 16x16 to 128x128."""
-        return F.interpolate(x, size=(128, 128), mode="bilinear")
+    def _build_norm_params(self) -> dict:
+        """Build norm_params dict for denormalization."""
+        norm_params = {
+            "normalization": self.config.data.get("normalization", "minus1_to_plus1")
+        }
 
-    def _add_noise_channel(self, x: torch.Tensor) -> torch.Tensor:
-        """Add noise channel to input."""
-        noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device)
-        return torch.cat([x, noise], dim=1)
+        if self.y_min is not None:
+            norm_params["y_min"] = self.y_min
+        if self.y_max is not None:
+            norm_params["y_max"] = self.y_max
+        if self.y_min_log is not None:
+            norm_params["y_min_log"] = self.y_min_log
+        if self.y_max_log is not None:
+            norm_params["y_max_log"] = self.y_max_log
 
-    def _denormalize(self, y_pred: torch.Tensor) -> torch.Tensor:
-        """Denormalize predictions from normalized space back to original scale."""
-        if self.y_min is None or self.y_max is None:
-            return y_pred
-
-        y_min = torch.tensor(self.y_min.values, device=y_pred.device)
-        y_max = torch.tensor(self.y_max.values, device=y_pred.device)
-
-        if y_pred.dim() == 4:  # (batch, 1, H, W)
-            y_min = y_min.unsqueeze(0).unsqueeze(0)
-            y_max = y_max.unsqueeze(0).unsqueeze(0)
-
-        # Check normalization method from config
-        normalization = self.config.data.get("normalization", "minus1_to_plus1")
-
-        if normalization == "mp1p1_input_m1p1log_target":
-            # For mp1p1_input_m1p1log_target:
-            # Forward: log1p(y + 1e-6) - log1p(1e-6), then min-max to [-1, 1]
-            # Reverse:
-            # 1. Reverse min-max using y_min_log and y_max_log
-            if self.y_min_log is not None and self.y_max_log is not None:
-                y_min_log = torch.tensor(self.y_min_log.values, device=y_pred.device)
-                y_max_log = torch.tensor(self.y_max_log.values, device=y_pred.device)
-                if y_pred.dim() == 4:  # (batch, 1, H, W)
-                    y_min_log = y_min_log.unsqueeze(0).unsqueeze(0)
-                    y_max_log = y_max_log.unsqueeze(0).unsqueeze(0)
-                y_log = ((y_pred + 1) / 2) * (y_max_log - y_min_log) + y_min_log
-            else:
-                # Fallback if log parameters not found
-                y_log = ((y_pred + 1) / 2) * (y_max - y_min) + y_min
-            # 2. Reverse log: y = expm1(y_log + log1p(1e-6)) - 1e-6
-            y_denorm = (
-                torch.expm1(
-                    y_log
-                    + torch.tensor(
-                        float(torch.log1p(torch.tensor(1e-6))), device=y_pred.device
-                    )
-                )
-                - 1e-6
-            )
-            # Clamp to avoid negative values for precipitation
-            y_denorm = torch.clamp(y_denorm, min=0.0)
-        elif normalization == "m1p1_log_target":
-            # For m1p1_log_target:
-            # Model outputs softplus activation (already positive, log-space)
-            # Reverse log transform: expm1
-            y_denorm = torch.expm1(y_pred) - 1e-6
-            # Clamp to avoid negative values
-            y_denorm = torch.clamp(y_denorm, min=0.0)
-        else:
-            # For minus1_to_plus1:
-            # Reverse normalization: y_norm = (y - y_min) / (y_max - y_min) * 2 - 1
-            # So: y = ((y_norm + 1) / 2) * (y_max - y_min) + y_min
-            y_denorm = ((y_pred + 1) / 2) * (y_max - y_min) + y_min
-
-        return y_denorm
+        return norm_params
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """Predict using GAN generator."""
+        from ml_benchmark_spategan.utils.interpolate import (
+            add_noise_channel,
+            upscale_bilinear,
+        )
+        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
+
         x = x.to(self.device)
 
         with torch.no_grad():
@@ -295,8 +225,8 @@ class GANWrapper(ModelWrapper):
                 if self.upsampler is not None:
                     x_hr = self.upsampler(x)
                 else:
-                    x_hr = self._upscale_nn(x)
-                x_with_noise = self._add_noise_channel(x_hr)
+                    x_hr = upscale_bilinear(x, target_size=(128, 128))
+                x_with_noise = add_noise_channel(x_hr, noise_std=0.2)
 
                 # Generate
                 timesteps = torch.zeros(x.shape[0], device=self.device)
@@ -310,7 +240,8 @@ class GANWrapper(ModelWrapper):
                 raise ValueError(f"Unknown architecture: {arch}")
 
             # Denormalize if needed
-            output = self._denormalize(output)
+            norm_params = self._build_norm_params()
+            output = denormalize_predictions(output, norm_params)
 
             return output
 

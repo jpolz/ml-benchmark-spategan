@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch import amp
 from torch.nn import functional as F
+from ml_benchmark_spategan.utils.interpolate import add_noise_channel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -359,19 +360,6 @@ class Discriminator(nn.Module):
         return out
 
 
-# move to utils
-def add_noise_channel(x):
-    """
-    Adds one Gaussian noise channel to a BCHW tensor.
-    x: (batch, C, H, W)
-    returns: (batch, C+1, H, W)
-    """
-    noise = torch.randn(
-        x.size(0), 1, x.size(2), x.size(3), device=x.device, dtype=x.dtype
-    )
-    return torch.cat([x, noise], dim=1)
-
-
 def train_gan_step(
     config,
     input_image,
@@ -444,7 +432,8 @@ def train_gan_step(
             match config.model.architecture:
                 case "spategan":
                     gen_outputs = [
-                        generator(input_image).view(-1, 1, 128, 128) for _ in range(config.training.ensemble_size)
+                        generator(input_image).view(-1, 1, 128, 128)
+                        for _ in range(config.training.ensemble_size)
                     ]
                 case "diffusion_unet":
                     gen_outputs = [
@@ -454,17 +443,13 @@ def train_gan_step(
                         for _ in range(config.training.ensemble_size)
                     ]
                 case _:
-                    raise ValueError(
-                        f"Invalid option: {config.model.architecture}"
-                    )
+                    raise ValueError(f"Invalid option: {config.model.architecture}")
 
             gen_ensemble = torch.cat(gen_outputs, dim=1)
             pred_log = gen_ensemble[:, 0:1]
 
             # calculate ensemble mean
-            gen_ensemble_mean = (
-                torch.mean(gen_ensemble, dim=1, keepdim=True)
-            )
+            gen_ensemble_mean = torch.mean(gen_ensemble, dim=1, keepdim=True)
 
             # Classify all fake batch with D
             if condition_separate_channels:
@@ -481,26 +466,23 @@ def train_gan_step(
 
             # Hinge Loss:
             # gen_gan_loss = -torch.mean(disc_fake_output)
-            
+
             l1loss = nn.L1Loss()(gen_ensemble_mean, target)
-            
+
             if config.training.fss_loss:
-                fss_loss = fss_criterion(
-                    gen_ensemble, target
-                )
+                fss_loss = fss_criterion(gen_ensemble, target)
                 loss = (
                     loss_weights["l1"] * l1loss
                     + loss_weights["gan"] * gen_gan_loss
                     + loss_weights["fss"] * fss_loss
                 )
-                
-                # print(f"Step {step}: L1 Loss: {l1loss.item():.4f}, GAN Loss: {gen_gan_loss.item():.4f}, FSS Loss: {fss_loss.item():.4f}")
-                
-            else:
-                loss = loss_weights["l1"] * l1loss + loss_weights["gan"] * gen_gan_loss 
-                
-                # print(f"Step {step}: L1 Loss: {l1loss.item():.4f}, GAN Loss: {gen_gan_loss.item():.4f}")
 
+                # print(f"Step {step}: L1 Loss: {l1loss.item():.4f}, GAN Loss: {gen_gan_loss.item():.4f}, FSS Loss: {fss_loss.item():.4f}")
+
+            else:
+                loss = loss_weights["l1"] * l1loss + loss_weights["gan"] * gen_gan_loss
+
+                # print(f"Step {step}: L1 Loss: {l1loss.item():.4f}, GAN Loss: {gen_gan_loss.item():.4f}")
 
         scaler.scale(loss).backward()
         # Gradient Norm Clipping
@@ -523,9 +505,7 @@ def train_gan_step(
                         add_noise_channel(input_image_hr), timesteps
                     ).view(-1, 1, 128, 128)
                 case _:
-                    raise ValueError(
-                        f"Invalid option: {config.model.architecture}"
-                    )
+                    raise ValueError(f"Invalid option: {config.model.architecture}")
 
     ####################
     ## Discriminator: ##

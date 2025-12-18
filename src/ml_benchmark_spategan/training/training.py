@@ -1,7 +1,41 @@
+"""
+Training module for SpatialGAN and Diffusion UNet models.
+
+This module implements the main training pipeline for deep learning emulators
+of Regional Climate Models (RCMs) using the CORDEX Benchmark dataset. It supports
+two architectures:
+- SpatialGAN: Custom GAN architecture for spatial downscaling
+- Diffusion UNet: U-Net based conditional generation model
+
+The training workflow includes:
+1. Configuration loading and experiment setup
+2. Data loading with normalization (supports multiple normalization methods)
+3. Model initialization (generator and discriminator)
+4. Adversarial training with mixed precision
+5. Validation and diagnostic computation (RMSE, bias)
+6. Checkpointing and visualization
+
+Key features:
+- Command-line configuration via --config argument
+- Multiple normalization methods (standardization, minmax, log transforms, etc.)
+- FSS (Fractions Skill Score) loss for spatial pattern matching
+- Learnable or fixed bilinear upsampling
+- Comprehensive logging and visualization during training
+- Integration with CORDEX Benchmark diagnostics
+
+Usage:
+    python -m ml_benchmark_spategan.training --config config.yml
+
+The module saves:
+- Model checkpoints (generator, discriminator, optimizers)
+- Normalization parameters for denormalization during inference
+- Training diagnostics and loss history
+- Sample prediction visualizations
+"""
+
 ############
 # Imports
 ############
-
 
 import argparse
 import logging
@@ -14,6 +48,7 @@ import sys
 import numpy as np
 import torch
 import torch.nn as nn
+import xarray as xr
 from diffusers import UNet2DModel
 from IPython.display import clear_output
 from torchinfo import summary
@@ -139,38 +174,21 @@ def main():
 
             # Print model summaries
             logger.info("Generator architecture:")
-            summary(generator, input_size=(1, 15, 16, 16))
+            summary(
+                generator,
+                input_size=(1, 15, 16, 16),
+                verbose=0,
+            )
         case "diffusion_unet":
             logger.info("Using Diffusion UNet architecture")
 
-            # Wrapper class for adding final activation to UNet2DModel
-            class UNetWithActivation(nn.Module):
-                def __init__(self, base_model, activation):
-                    super().__init__()
-                    self.model = base_model
-                    self.activation = activation
-
-                def forward(self, sample, timestep):
-                    output = self.model(sample, timestep).sample
-                    return self.activation(output)
+            from ml_benchmark_spategan.model.unet2d import create_unet_generator
 
             # Get UNet config from generator.diffusion_unet
             unet_cfg = cf.model.generator.diffusion_unet
-            base_generator = UNet2DModel(
-                sample_size=tuple(unet_cfg.sample_size),
-                in_channels=unet_cfg.in_channels,
-                out_channels=unet_cfg.out_channels,
-                layers_per_block=unet_cfg.layers_per_block,
-                block_out_channels=tuple(unet_cfg.block_out_channels),
-                down_block_types=tuple(unet_cfg.down_block_types),
-                up_block_types=tuple(unet_cfg.up_block_types),
-            )
-
-            # if predictions are not [-1, 1], change final activation
-            if cf.data.normalization == "m1p1_log_target":
-                generator = UNetWithActivation(base_generator, nn.Softplus()).to(device)
-            else:  # use linear activation by default
-                generator = UNetWithActivation(base_generator, nn.Identity()).to(device)
+            generator = create_unet_generator(
+                unet_cfg, normalization=cf.data.normalization
+            ).to(device)
 
             logger.info(
                 str(
@@ -178,6 +196,7 @@ def main():
                         generator,
                         input_size=[(1, 16, 128, 128), (1,)],
                         dtypes=[torch.float32, torch.long],
+                        verbose=0,
                     )
                 )
             )
@@ -203,6 +222,7 @@ def main():
                     discriminator,
                     input_size=[(1, 2, 128, 128), (1,)],
                     dtypes=[torch.float32, torch.long],
+                    verbose=0,
                 )
             )
         )
@@ -212,7 +232,13 @@ def main():
         logger.info("\nDiscriminator architecture:")
         # Note: Discriminator takes (high_res_target, low_res_input)
         logger.info(
-            str(summary(discriminator, input_size=[(1, 1, 128, 128), (1, 15, 16, 16)]))
+            str(
+                summary(
+                    discriminator,
+                    input_size=[(1, 1, 128, 128), (1, 15, 16, 16)],
+                    verbose=0,
+                )
+            )
         )
         condition_separate_channels = True
     else:
@@ -287,7 +313,17 @@ def main():
     loss_fss_test = []
 
     # Store diagnostics
-    diagnostic_history = {"rmse": [], "bias_mean": [], "epochs": []}
+    diagnostic_history = {
+        "rmse": [],
+        "bias_mean": [],
+        "bias_q95": [],
+        "bias_q98": [],
+        "std_ratio": [],
+        "mae": [],
+        "correlation": [],
+        "anomaly_correlation": [],
+        "epochs": [],
+    }
 
     # Track best validation loss
     best_val_loss = float("inf")
@@ -494,15 +530,74 @@ def main():
                 pred_ds,
                 index_fn=lambda x, **kw: x[cf.data.var_target].mean("time"),
             )
+            bias_q95 = diagnostics.bias_index(
+                true_ds,
+                pred_ds,
+                index_fn=lambda x, **kw: x[cf.data.var_target].quantile(
+                    0.95, dim="time"
+                ),
+            )
+            bias_q98 = diagnostics.bias_index(
+                true_ds,
+                pred_ds,
+                index_fn=lambda x, **kw: x[cf.data.var_target].quantile(
+                    0.98, dim="time"
+                ),
+            )
+            std_ratio = diagnostics.ratio_index(
+                true_ds,
+                pred_ds,
+                index_fn=lambda x, **kw: x[cf.data.var_target].std("time"),
+            )
+
+            # Mean Absolute Error
+            mae = np.abs(
+                pred_ds[cf.data.var_target] - true_ds[cf.data.var_target]
+            ).mean("time")
+
+            # Pearson correlation
+            correlation = xr.corr(
+                pred_ds[cf.data.var_target],
+                true_ds[cf.data.var_target],
+                dim="time",
+            )
+
+            # Anomaly correlation (after removing climatology)
+            pred_anomaly = pred_ds[cf.data.var_target] - pred_ds[
+                cf.data.var_target
+            ].mean("time")
+            true_anomaly = true_ds[cf.data.var_target] - true_ds[
+                cf.data.var_target
+            ].mean("time")
+            anomaly_correlation = xr.corr(pred_anomaly, true_anomaly, dim="time")
+
+            # Store spatially-averaged diagnostics
             diagnostic_history["rmse"].append(
                 rmse[cf.data.var_target].mean().values.item()
             )
             diagnostic_history["bias_mean"].append(bias_mean.mean().values.item())
+            diagnostic_history["bias_q95"].append(bias_q95.mean().values.item())
+            diagnostic_history["bias_q98"].append(bias_q98.mean().values.item())
+            diagnostic_history["std_ratio"].append(std_ratio.mean().values.item())
+            diagnostic_history["mae"].append(mae.mean().values.item())
+            diagnostic_history["correlation"].append(correlation.mean().values.item())
+            diagnostic_history["anomaly_correlation"].append(
+                anomaly_correlation.mean().values.item()
+            )
             diagnostic_history["epochs"].append(epoch + 1)
 
             logger.info(f"  RMSE (spatial mean): {diagnostic_history['rmse'][-1]:.4f}")
             logger.info(
                 f"  Bias Mean (spatial mean): {diagnostic_history['bias_mean'][-1]:.4f}"
+            )
+            logger.info(
+                f"  Bias Q95 (spatial mean): {diagnostic_history['bias_q95'][-1]:.4f}"
+            )
+            logger.info(
+                f"  Std Ratio (spatial mean): {diagnostic_history['std_ratio'][-1]:.4f}"
+            )
+            logger.info(
+                f"  Correlation (spatial mean): {diagnostic_history['correlation'][-1]:.4f}"
             )
             plot_diagnostic_history(diagnostic_history, cf)
 

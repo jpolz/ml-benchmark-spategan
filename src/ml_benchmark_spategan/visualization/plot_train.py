@@ -163,7 +163,7 @@ def plot_predictions(
 
     # Denormalize if norm_params provided
     if norm_params is not None:
-        from ml_benchmark_spategan.utils.denormalize import denormalize_predictions
+        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
 
         y = denormalize_predictions(y, norm_params)
         y_pred = denormalize_predictions(y_pred, norm_params)

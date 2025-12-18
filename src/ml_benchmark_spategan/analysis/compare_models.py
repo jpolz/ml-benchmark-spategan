@@ -11,16 +11,15 @@ import xarray as xr
 from einops import rearrange
 from torch.utils.data import DataLoader
 
-from ml_benchmark_spategan.analysis.data_utils import (
-    TestDataset,
-    load_cordex_data,
-    normalize_predictors,
-    prepare_torch_data,
-    split_train_test,
-    standardize_predictors,
-)
+from ml_benchmark_spategan.analysis.data_utils import prepare_torch_data
 from ml_benchmark_spategan.analysis.model_loader import load_model
 from ml_benchmark_spategan.config import config
+from ml_benchmark_spategan.dataloader.dataloader import (
+    EmulationTestDataset,
+    load_cordex_data,
+    split_train_test,
+)
+from ml_benchmark_spategan.utils.normalize import normalize_predictors
 from ml_benchmark_spategan.visualization.plot_results import (
     plot_prediction_comparison,
     plot_psd_comparison,
@@ -233,14 +232,16 @@ def main():
         print("\n=== Loading DeepESD Model ===")
 
         # DeepESD uses standardization
-        x_train_stand, x_test_stand = standardize_predictors(x_train, x_test)
+        x_train_stand, x_test_stand, _, _, _ = normalize_predictors(
+            x_train, x_test, y_train, y_test, "standardization"
+        )
         x_train_tensor, y_train_tensor = prepare_torch_data(
             x_train_stand, y_train, args.domain
         )
         x_test_tensor, _ = prepare_torch_data(x_test_stand, y_test, args.domain)
 
-        # Create test dataloader
-        test_dataset = TestDataset(x_test_tensor)
+        # Create test dataset
+        test_dataset = EmulationTestDataset(x_test_tensor)
         test_loader = DataLoader(
             test_dataset, batch_size=args.batch_size, shuffle=False
         )
@@ -305,16 +306,16 @@ def main():
             normalization = cf.data.get("normalization", "standardization")
             print(f"Using normalization: {normalization}")
 
-            x_train_norm, x_test_norm = normalize_predictors(
-                x_train, x_test, normalization
+            x_train_norm, x_test_norm, y_train_norm, y_test_norm, _ = (
+                normalize_predictors(x_train, x_test, y_train, y_test, normalization)
             )
             x_train_tensor, y_train_tensor = prepare_torch_data(
-                x_train_norm, y_train, args.domain
+                x_train_norm, y_train_norm, args.domain
             )
-            x_test_tensor, _ = prepare_torch_data(x_test_norm, y_test, args.domain)
+            x_test_tensor, _ = prepare_torch_data(x_test_norm, y_test_norm, args.domain)
 
             # Create test dataloader with model-specific normalization
-            test_dataset = TestDataset(x_test_tensor)
+            test_dataset = EmulationTestDataset(x_test_tensor)
             test_loader = DataLoader(
                 test_dataset, batch_size=args.batch_size, shuffle=False
             )
