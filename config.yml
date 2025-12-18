@@ -42,7 +42,7 @@ training:
 
 # Model configuration
 model:
-  architecture: "spategan" # "diffusion_unet" or "spategan" or "deepesd"
+  architecture: "deepesd" # "diffusion_unet" or "spategan" or "deepesd"
   use_learnable_upsampler: false  # Use learnable conv-based upsampling instead of fixed bilinear
   
   # Generator architecture configurations
@@ -109,4 +109,4 @@ logging:
   log_frequency: 1 # number of epochs between loss plots
   checkpoint_frequency: 40 # number of epochs between checkpoints
   map_frequency: 40 # number of epochs between plotting maps
-  diagnostic_frequency: 20 # number of epochs between computing diagnostics
+  diagnostic_frequency: 5 # number of epochs between computing diagnostics

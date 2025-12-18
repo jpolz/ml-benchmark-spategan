@@ -108,21 +108,24 @@ def train_gan_step(
             # calculate ensemble mean
             gen_ensemble_mean = torch.mean(gen_ensemble, dim=1, keepdim=True)
 
-            # Classify all fake batch with D
-            if condition_separate_channels:
-                disc_fake_output = discriminator(pred_log, input_image)
-            else:
-                disc_fake_output = discriminator(
-                    torch.cat((pred_log, input_image_hr), dim=1), timesteps
+            if loss_weights["gan"] > 0.0:
+                # Classify all fake batch with D
+                if condition_separate_channels:
+                    disc_fake_output = discriminator(pred_log, input_image)
+                else:
+                    disc_fake_output = discriminator(
+                        torch.cat((pred_log, input_image_hr), dim=1), timesteps
+                    )
+
+                # BCE Loss:
+                gen_gan_loss = criterion(
+                    disc_fake_output, torch.ones_like(disc_fake_output)
                 )
 
-            # BCE Loss:
-            gen_gan_loss = criterion(
-                disc_fake_output, torch.ones_like(disc_fake_output)
-            )
-
-            # Hinge Loss:
-            # gen_gan_loss = -torch.mean(disc_fake_output)
+                # Hinge Loss:
+                # gen_gan_loss = -torch.mean(disc_fake_output)
+            else:
+                gen_gan_loss = 0.0
 
             l1loss = nn.L1Loss()(gen_ensemble_mean, target)
 

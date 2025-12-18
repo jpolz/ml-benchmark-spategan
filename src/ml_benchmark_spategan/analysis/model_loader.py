@@ -33,7 +33,7 @@ def load_model(model_type: str, **kwargs):
     )
 
     if model_type.lower() == "deepesd":
-        from ml_benchmark_spategan.model.deepesd import DeepESDWrapper
+        from ml_benchmark_spategan.model.generators.deepesd import DeepESDWrapper
 
         return DeepESDWrapper(
             model_path=kwargs["model_path"],
@@ -44,7 +44,7 @@ def load_model(model_type: str, **kwargs):
         )
 
     elif model_type.lower() == "gan":
-        from ml_benchmark_spategan.model.spagan2d import SpaGANWrapper
+        from ml_benchmark_spategan.model.generators.spategan import SpaGANWrapper
 
         return SpaGANWrapper(
             run_dir=kwargs["run_dir"],

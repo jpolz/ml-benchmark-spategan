@@ -257,3 +257,186 @@ class Generator(BaseModel):
         """
         with torch.no_grad():
             return self(x, dropout_seed)
+
+
+class SpaGANWrapper:
+    """
+    Inference wrapper for SpaGAN and UNet2D generator models.
+
+    Handles model loading, checkpoint management, normalization parameter loading,
+    and prediction with proper preprocessing and denormalization.
+
+    Args:
+        run_dir: Directory containing the trained model
+        config: Model configuration object
+        checkpoint_epoch: Specific epoch to load (None for final model)
+        device: Device to run model on
+    """
+
+    def __init__(
+        self,
+        run_dir: str,
+        config,
+        checkpoint_epoch: int = None,
+        device: torch.device = None,
+    ):
+        from pathlib import Path
+
+        from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
+
+        self.device = device or torch.device("cpu")
+        self.run_dir = Path(run_dir)
+        self.config = config
+
+        # Initialize generator based on architecture
+        self._load_generator()
+
+        # Load checkpoint - either specific epoch or final model
+        if checkpoint_epoch is not None:
+            checkpoint_path = (
+                self.run_dir / "checkpoints" / f"checkpoint_epoch_{checkpoint_epoch}.pt"
+            )
+        else:
+            checkpoint_path = self.run_dir / "checkpoints" / "final_models.pt"
+
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        checkpoint = torch.load(
+            checkpoint_path, map_location=self.device, weights_only=False
+        )
+        self.model.load_state_dict(checkpoint["generator_state_dict"])
+        self.model.to(self.device)
+        self.model.eval()
+
+        # Load upsampler if it exists in checkpoint
+        self.upsampler = None
+        if "upsampler_state_dict" in checkpoint:
+            # Recreate the upsampler architecture with correct number of input channels
+            n_input_channels = self.config.model.get("n_input_channels", 15)
+            self.upsampler = LearnableUpsampler(in_channels=n_input_channels).to(
+                self.device
+            )
+            self.upsampler.load_state_dict(checkpoint["upsampler_state_dict"])
+            self.upsampler.eval()
+
+        self.checkpoint_epoch = checkpoint.get("epoch", checkpoint_epoch)
+
+        # Load normalization parameters if they exist
+        self.y_min = None
+        self.y_max = None
+        self.y_min_log = None
+        self.y_max_log = None
+        self._load_normalization()
+
+    def _load_generator(self):
+        """Load generator architecture."""
+        arch = self.config.model.get("architecture") or self.config.model.get(
+            "generator_architecture"
+        )
+
+        if arch == "spategan":
+            self.model = Generator(self.config.model)
+
+        elif arch == "diffusion_unet":
+            from ml_benchmark_spategan.model.generators.unet2d import (
+                create_unet_generator,
+            )
+
+            # Get UNet config from new structure
+            unet_cfg = self.config.model.generator.diffusion_unet
+            normalization = self.config.data.get("normalization", "minus1_to_plus1")
+            self.model = create_unet_generator(unet_cfg, normalization=normalization)
+        else:
+            raise ValueError(f"Unknown architecture: {arch}")
+
+    def _load_normalization(self):
+        """Load normalization parameters."""
+        import xarray as xr
+
+        ymin_path = self.run_dir / "y_min.nc"
+        ymax_path = self.run_dir / "y_max.nc"
+        ymin_log_path = self.run_dir / "y_min_log.nc"
+        ymax_log_path = self.run_dir / "y_max_log.nc"
+
+        if ymin_path.exists() and ymax_path.exists():
+            self.y_min = xr.open_dataarray(ymin_path)
+            self.y_max = xr.open_dataarray(ymax_path)
+
+        if ymin_log_path.exists() and ymax_log_path.exists():
+            self.y_min_log = xr.open_dataarray(ymin_log_path)
+            self.y_max_log = xr.open_dataarray(ymax_log_path)
+
+    def _build_norm_params(self) -> dict:
+        """Build norm_params dict for denormalization."""
+        norm_params = {
+            "normalization": self.config.data.get("normalization", "minus1_to_plus1")
+        }
+
+        if self.y_min is not None:
+            norm_params["y_min"] = self.y_min
+        if self.y_max is not None:
+            norm_params["y_max"] = self.y_max
+        if self.y_min_log is not None:
+            norm_params["y_min_log"] = self.y_min_log
+        if self.y_max_log is not None:
+            norm_params["y_max_log"] = self.y_max_log
+
+        return norm_params
+
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Generate predictions from input.
+
+        Args:
+            x: Input tensor
+
+        Returns:
+            Denormalized predictions
+        """
+        from ml_benchmark_spategan.utils.interpolate import (
+            add_noise_channel,
+            upscale_bilinear,
+        )
+        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
+
+        x = x.to(self.device)
+
+        with torch.no_grad():
+            arch = self.config.model.get("architecture") or self.config.model.get(
+                "generator_architecture"
+            )
+
+            if arch == "diffusion_unet":
+                # Diffusion UNet needs upscaled input with noise channel
+                # Upscale - use learnable upsampler if available
+                if self.upsampler is not None:
+                    x_hr = self.upsampler(x)
+                else:
+                    x_hr = upscale_bilinear(x, target_size=(128, 128))
+                x_with_noise = add_noise_channel(x_hr, noise_std=0.2)
+
+                # Generate
+                timesteps = torch.zeros(x.shape[0], device=self.device)
+                output = self.model(x_with_noise, timesteps)
+
+            elif arch == "spategan":
+                # SpatGAN works directly on 16x16 input, no upscaling or noise
+                output = self.model(x)
+
+            else:
+                raise ValueError(f"Unknown architecture: {arch}")
+
+            # Denormalize if needed
+            norm_params = self._build_norm_params()
+            output = denormalize_predictions(output, norm_params)
+
+            return output
+
+    def to(self, device: torch.device):
+        """Move model to specified device."""
+        self.device = device
+        self.model = self.model.to(device)
+        if self.upsampler is not None:
+            self.upsampler = self.upsampler.to(device)
+        return self
