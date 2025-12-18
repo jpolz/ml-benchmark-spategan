@@ -42,7 +42,7 @@ training:
 
 # Model configuration
 model:
-  architecture: "diffusion_unet" # "diffusion_unet" or "spategan"
+  architecture: "deepesd" # "diffusion_unet" or "spategan" or "deepesd"
   use_learnable_upsampler: false  # Use learnable conv-based upsampling instead of fixed bilinear
   
   # Generator architecture configurations
@@ -61,12 +61,16 @@ model:
         - "UpBlock2D"
         - "UpBlock2D"
         - "UpBlock2D"
-    # spategan:
-    #   filter_size: 96
-    #   n_input_channels: 15
-    #   n_output_channels: 1
-    #   dropout_seed: 42
-    #   dropout_ratio: 0.2
+    spategan:
+      filter_size: 96
+      n_input_channels: 15
+      n_output_channels: 1
+      dropout_seed: 42
+      dropout_ratio: 0.2
+    deepesd:
+      x_shape: [1,15,16,16]
+      y_shape: [1,128,128]
+      filters_last_conv: 1
   
   # Legacy fields for backward compatibility
   discriminator_architecture: "spategan" # "unet" or "spategan"

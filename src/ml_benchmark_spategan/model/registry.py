@@ -53,10 +53,15 @@ def create_generator(config, device: torch.device = None):
     elif architecture == "deepesd":
         from ml_benchmark_spategan.model.deepesd import DeepESD
 
-        generator = DeepESD().to(device)
+        deepesd_cfg = config.model.generator.deepesd
+        generator = DeepESD(
+            x_shape=deepesd_cfg.x_shape,
+            y_shape=deepesd_cfg.y_shape,
+            filters_last_conv=deepesd_cfg.filters_last_conv,
+        ).to(device)
 
         print("Generator architecture:")
-        print(summary(generator, input_size=(1, 15, 128, 128), verbose=0))
+        print(summary(generator, input_size=(1, 15, 16, 16), verbose=0))
 
         return generator
 

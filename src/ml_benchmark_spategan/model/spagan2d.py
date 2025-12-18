@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch import amp
 from torch.nn import functional as F
 
+from ml_benchmark_spategan.model.base import BaseModel
 from ml_benchmark_spategan.utils.interpolate import add_noise_channel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -127,7 +128,7 @@ class Constraint(nn.Module):
         return prediction * (scale / pred_mean)
 
 
-class Generator(nn.Module):
+class Generator(BaseModel):
     def __init__(self, cf):
         super().__init__()
 
@@ -225,6 +226,53 @@ class Generator(nn.Module):
         # )
 
         return output
+
+    def train_step(
+        self,
+        batch,
+        optimizers,
+        criterion,
+        scaler,
+        config,
+        **kwargs,
+    ) -> dict:
+        """
+        Generator training is handled by train_gan_step function.
+        This method delegates to that function.
+
+        Args:
+            batch: Tuple of (input, target) tensors
+            optimizers: Dict with 'generator' and 'discriminator' keys
+            criterion: Loss function
+            scaler: Gradient scaler
+            config: Configuration object
+            **kwargs: Additional arguments (discriminator, fss_criterion, timesteps, etc.)
+
+        Returns:
+            Dict with 'gen_loss' and 'disc_loss' keys
+        """
+        # GAN training is complex and handled by train_gan_step
+        # This method exists for interface compliance
+        raise NotImplementedError(
+            "Generator training is handled by train_gan_step function"
+        )
+
+    def predict_step(
+        self, x: torch.Tensor, dropout_seed: int = None, **kwargs
+    ) -> torch.Tensor:
+        """
+        Perform prediction without denormalization.
+
+        Args:
+            x: Input tensor
+            dropout_seed: Random seed for dropout (optional)
+            **kwargs: Unused
+
+        Returns:
+            Raw model output
+        """
+        with torch.no_grad():
+            return self(x, dropout_seed)
 
 
 class Discriminator(nn.Module):
@@ -443,6 +491,11 @@ def train_gan_step(
                         )
                         for _ in range(config.training.ensemble_size)
                     ]
+                case "deepesd":
+                    gen_outputs = [
+                        generator(input_image).view(-1, 1, 128, 128)
+                        for _ in range(config.training.ensemble_size)
+                    ]
                 case _:
                     raise ValueError(f"Invalid option: {config.model.architecture}")
 
@@ -505,6 +558,8 @@ def train_gan_step(
                     pred_log = generator(
                         add_noise_channel(input_image_hr), timesteps
                     ).view(-1, 1, 128, 128)
+                case "deepesd":
+                    pred_log = generator(input_image).view(-1, 1, 128, 128)
                 case _:
                     raise ValueError(f"Invalid option: {config.model.architecture}")
 

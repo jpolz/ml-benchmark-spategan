@@ -243,6 +243,7 @@ def main():
         "mae": [],
         "correlation": [],
         "anomaly_correlation": [],
+        "fss": [],
         "epochs": [],
     }
 
@@ -356,6 +357,8 @@ def main():
 
                 with torch.amp.autocast("cuda"):
                     match architecture:
+                        case "deepesd":
+                            y_pred = generator(x_batch)
                         case "spategan":
                             y_pred = generator(x_batch)
                         case "diffusion_unet":
@@ -505,6 +508,7 @@ def main():
             diagnostic_history["anomaly_correlation"].append(
                 anomaly_correlation.mean().values.item()
             )
+            diagnostic_history["fss"].append(mean_fss_test)
             diagnostic_history["epochs"].append(epoch + 1)
 
             logger.info(f"  RMSE (spatial mean): {diagnostic_history['rmse'][-1]:.4f}")

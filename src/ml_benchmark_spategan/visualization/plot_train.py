@@ -88,6 +88,7 @@ def plot_diagnostic_history(diagnostic_history, cf):
         ("std_ratio", "Std Ratio (spatial mean)", "tab:brown", 1),
         ("correlation", "Correlation (spatial mean)", "tab:pink", None),
         ("anomaly_correlation", "Anomaly Correlation (spatial mean)", "tab:gray", None),
+        ("fss", "FSS (Fractions Skill Score)", "tab:cyan", None),
     ]
 
     for idx, (key, ylabel, color, hline) in enumerate(plots):
@@ -112,8 +113,7 @@ def plot_diagnostic_history(diagnostic_history, cf):
         else:
             ax.axis("off")
 
-    # Hide the last subplot (9th position) if not needed
-    axes[8].axis("off")
+    # The 9th subplot will now have FSS, so no need to hide it
 
     plt.suptitle(
         "Diagnostic Metrics Evolution", fontsize=16, fontweight="bold", y=0.995

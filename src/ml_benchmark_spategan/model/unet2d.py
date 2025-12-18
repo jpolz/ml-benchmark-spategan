@@ -1,10 +1,13 @@
 """UNet2D model wrapper with configurable activation functions."""
 
+import torch
 import torch.nn as nn
 from diffusers import UNet2DModel
 
+from ml_benchmark_spategan.model.base import BaseModel
 
-class UNetWithActivation(nn.Module):
+
+class UNetWithActivation(BaseModel):
     """
     Wrapper for UNet2DModel with configurable final activation.
 
@@ -34,6 +37,54 @@ class UNetWithActivation(nn.Module):
         """
         output = self.model(sample, timestep).sample
         return self.activation(output)
+
+    def train_step(
+        self,
+        batch,
+        optimizers,
+        criterion,
+        scaler,
+        config,
+        **kwargs,
+    ) -> dict:
+        """
+        UNet training is handled by the GAN training step.
+        This method is not used directly for diffusion_unet architecture.
+
+        Args:
+            batch: Tuple of (input, target) tensors
+            optimizers: Dict of optimizers
+            criterion: Loss function
+            scaler: Gradient scaler
+            config: Configuration object
+            **kwargs: Additional arguments
+
+        Returns:
+            Empty dict (training handled by train_gan_step)
+        """
+        raise NotImplementedError(
+            "UNet training is handled by train_gan_step in spagan2d module"
+        )
+
+    def predict_step(
+        self, x: torch.Tensor, timesteps: torch.Tensor = None, **kwargs
+    ) -> torch.Tensor:
+        """
+        Perform prediction without denormalization.
+
+        Args:
+            x: Input tensor
+            timesteps: Timestep tensor (defaults to zeros if not provided)
+            **kwargs: Unused
+
+        Returns:
+            Raw model output
+        """
+        if timesteps is None:
+            timesteps = torch.zeros(x.shape[0], device=x.device)
+
+        with torch.no_grad():
+            return self(x, timesteps)
 
 
 def create_unet_generator(unet_cfg, normalization: str = "minus1_to_plus1"):
