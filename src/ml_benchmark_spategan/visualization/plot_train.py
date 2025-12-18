@@ -64,39 +64,60 @@ def plot_diagnostic_history(diagnostic_history, cf):
         - 'epochs': list of epoch numbers
         - 'rmse': list of RMSE values
         - 'bias_mean': list of bias mean values
+        - 'bias_q95': list of 95th percentile bias values
+        - 'bias_q98': list of 98th percentile bias values
+        - 'std_ratio': list of standard deviation ratio values
+        - 'mae': list of MAE values
+        - 'correlation': list of correlation values
+        - 'anomaly_correlation': list of anomaly correlation values
     cf : Config
         Configuration object with logging settings
     """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    axes = axes.flatten()
 
-    # Plot RMSE over epochs
-    ax1.plot(
-        diagnostic_history["epochs"],
-        diagnostic_history["rmse"],
-        "o-",
-        linewidth=2,
-        markersize=6,
+    epochs = diagnostic_history["epochs"]
+
+    # Define plots with their properties
+    plots = [
+        ("rmse", "RMSE (spatial mean)", "tab:blue", None),
+        ("mae", "MAE (spatial mean)", "tab:orange", None),
+        ("bias_mean", "Bias Mean (spatial mean)", "tab:green", 0),
+        ("bias_q95", "Bias Q95 (spatial mean)", "tab:red", 0),
+        ("bias_q98", "Bias Q98 (spatial mean)", "tab:purple", 0),
+        ("std_ratio", "Std Ratio (spatial mean)", "tab:brown", 1),
+        ("correlation", "Correlation (spatial mean)", "tab:pink", None),
+        ("anomaly_correlation", "Anomaly Correlation (spatial mean)", "tab:gray", None),
+    ]
+
+    for idx, (key, ylabel, color, hline) in enumerate(plots):
+        ax = axes[idx]
+        if key in diagnostic_history and len(diagnostic_history[key]) > 0:
+            ax.plot(
+                epochs,
+                diagnostic_history[key],
+                "o-",
+                linewidth=2,
+                markersize=6,
+                color=color,
+            )
+            ax.set_xlabel("Epoch", fontsize=11)
+            ax.set_ylabel(ylabel, fontsize=11)
+            ax.set_title(f"{ylabel} Evolution", fontsize=12, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+
+            # Add horizontal reference line if specified
+            if hline is not None:
+                ax.axhline(y=hline, color="k", linestyle="--", alpha=0.3)
+        else:
+            ax.axis("off")
+
+    # Hide the last subplot (9th position) if not needed
+    axes[8].axis("off")
+
+    plt.suptitle(
+        "Diagnostic Metrics Evolution", fontsize=16, fontweight="bold", y=0.995
     )
-    ax1.set_xlabel("Epoch", fontsize=12)
-    ax1.set_ylabel("RMSE (spatial mean)", fontsize=12)
-    ax1.set_title("RMSE Evolution", fontsize=14, fontweight="bold")
-    ax1.grid(True, alpha=0.3)
-
-    # Plot Bias Mean over epochs
-    ax2.plot(
-        diagnostic_history["epochs"],
-        diagnostic_history["bias_mean"],
-        "o-",
-        linewidth=2,
-        markersize=6,
-        color="orange",
-    )
-    ax2.set_xlabel("Epoch", fontsize=12)
-    ax2.set_ylabel("Bias Mean (spatial mean)", fontsize=12)
-    ax2.set_title("Bias Mean Evolution", fontsize=14, fontweight="bold")
-    ax2.grid(True, alpha=0.3)
-    ax2.axhline(y=0, color="k", linestyle="--", alpha=0.3)
-
     plt.tight_layout()
     plt.savefig(
         f"{cf.logging.run_dir}/diagnostics_history.png", dpi=150, bbox_inches="tight"

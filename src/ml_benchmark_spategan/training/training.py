@@ -49,18 +49,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import xarray as xr
-from diffusers import UNet2DModel
 from IPython.display import clear_output
-from torchinfo import summary
 from tqdm import tqdm
 
 from ml_benchmark_spategan.config import config
 from ml_benchmark_spategan.dataloader import dataloader
-from ml_benchmark_spategan.model.spagan2d import (
-    Discriminator,
-    Generator,
-    train_gan_step,
-)
+from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
+from ml_benchmark_spategan.model.spagan2d import train_gan_step
 from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 from ml_benchmark_spategan.utils.losses import FSSLoss
@@ -152,11 +147,6 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Support both old and new config format
-    architecture = cf.model.get("architecture") or cf.model.get(
-        "generator_architecture", "spategan"
-    )
-
     # Initialize upsampler based on config
     use_learnable_upsampler = cf.model.get("use_learnable_upsampler", False)
     if use_learnable_upsampler:
@@ -166,86 +156,17 @@ def main():
         logger.info("Using fixed bilinear upsampler")
         upsampler = None
 
-    match architecture:
-        case "spategan":
-            logger.info("Using spategan architecture")
-            # Initialize models
-            generator = Generator(cf.model).to(device)
+    # Create generator and discriminator using registry
+    architecture = cf.model.get("architecture") or cf.model.get(
+        "generator_architecture", "spategan"
+    )
+    logger.info(f"Using {architecture} architecture")
 
-            # Print model summaries
-            logger.info("Generator architecture:")
-            summary(
-                generator,
-                input_size=(1, 15, 16, 16),
-                verbose=0,
-            )
-        case "diffusion_unet":
-            logger.info("Using Diffusion UNet architecture")
+    generator = create_generator(cf, device)
+    discriminator = create_discriminator(cf, device)
 
-            from ml_benchmark_spategan.model.unet2d import create_unet_generator
-
-            # Get UNet config from generator.diffusion_unet
-            unet_cfg = cf.model.generator.diffusion_unet
-            generator = create_unet_generator(
-                unet_cfg, normalization=cf.data.normalization
-            ).to(device)
-
-            logger.info(
-                str(
-                    summary(
-                        generator,
-                        input_size=[(1, 16, 128, 128), (1,)],
-                        dtypes=[torch.float32, torch.long],
-                        verbose=0,
-                    )
-                )
-            )
-
-        case _:
-            raise ValueError(f"Invalid option: {architecture}")
-
-    if cf.model.discriminator_architecture == "unet":
-        logger.info("Using UNet2DModel as discriminator")
-        discriminator = UNet2DModel(
-            sample_size=(128, 128),
-            in_channels=2,  # +1 == noise
-            out_channels=1,
-            layers_per_block=2,
-            block_out_channels=(32, 64, 128),
-            down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D"),
-            up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D"),
-        ).to(device)
-        condition_separate_channels = True
-        logger.info(
-            str(
-                summary(
-                    discriminator,
-                    input_size=[(1, 2, 128, 128), (1,)],
-                    dtypes=[torch.float32, torch.long],
-                    verbose=0,
-                )
-            )
-        )
-    elif cf.model.discriminator_architecture == "spategan":
-        logger.info("Using spategan Discriminator")
-        discriminator = Discriminator(cf).to(device)
-        logger.info("\nDiscriminator architecture:")
-        # Note: Discriminator takes (high_res_target, low_res_input)
-        logger.info(
-            str(
-                summary(
-                    discriminator,
-                    input_size=[(1, 1, 128, 128), (1, 15, 16, 16)],
-                    verbose=0,
-                )
-            )
-        )
-        condition_separate_channels = True
-    else:
-        raise ValueError(f"Invalid option: {cf.model.discriminator_architecture}")
-
-    # Move models to device
-    generator = generator.to(device)
+    # Set conditioning flag based on discriminator architecture
+    condition_separate_channels = cf.model.discriminator_architecture != "unet"
 
     # Loss function
     criterion = nn.BCEWithLogitsLoss()

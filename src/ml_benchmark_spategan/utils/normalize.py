@@ -187,6 +187,9 @@ def denormalize_predictions(y_pred: torch.Tensor, norm_params: dict) -> torch.Te
         if isinstance(y_min, xr.Dataset):
             y_min = torch.from_numpy(y_min.to_array()[0].values).float()
             y_max = torch.from_numpy(y_max.to_array()[0].values).float()
+        elif isinstance(y_min, xr.DataArray):
+            y_min = torch.from_numpy(y_min.values).float()
+            y_max = torch.from_numpy(y_max.values).float()
 
         # Move to same device as predictions
         y_min = y_min.to(y_pred.device)
@@ -213,6 +216,9 @@ def denormalize_predictions(y_pred: torch.Tensor, norm_params: dict) -> torch.Te
         if isinstance(y_min_log, xr.Dataset):
             y_min_log = torch.from_numpy(y_min_log.to_array()[0].values).float()
             y_max_log = torch.from_numpy(y_max_log.to_array()[0].values).float()
+        elif isinstance(y_min_log, xr.DataArray):
+            y_min_log = torch.from_numpy(y_min_log.values).float()
+            y_max_log = torch.from_numpy(y_max_log.values).float()
 
         # Move to same device as predictions
         y_min_log = y_min_log.to(y_pred.device)
