@@ -14,6 +14,7 @@ class ResidualBlock2D(nn.Module):
         use_layer_norm: bool = True,
         stride: int = 1,
         padding_type: bool = False,
+        dropout: float = 0.0,
     ):
         super().__init__()
 
@@ -53,6 +54,7 @@ class ResidualBlock2D(nn.Module):
             if use_layer_norm
             else None
         )
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else None
         self.activation = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -84,6 +86,9 @@ class ResidualBlock2D(nn.Module):
         out += residual
         out = self.activation(out)
 
+        if self.dropout is not None:
+            out = self.dropout(out)
+
         return out
 
 
@@ -109,6 +114,8 @@ class Discriminator(nn.Module):
             self.lr_channels = [64, 32]
             self.combined_channels = [64]
             self.output_channels = [64, 1]
+            self.dropout = 0.0
+            self.use_spectral_norm = False
         else:
             self.hr_channels = getattr(
                 disc_config, "hr_channels", [128, 128, 128, 64, 64]
@@ -116,6 +123,8 @@ class Discriminator(nn.Module):
             self.lr_channels = getattr(disc_config, "lr_channels", [64, 32])
             self.combined_channels = getattr(disc_config, "combined_channels", [64])
             self.output_channels = getattr(disc_config, "output_channels", [64, 1])
+            self.dropout = getattr(disc_config, "dropout", 0.0)
+            self.use_spectral_norm = getattr(disc_config, "spectral_norm", False)
 
         # HIGH RESOLUTION path
         hr_layers = []
@@ -127,6 +136,7 @@ class Discriminator(nn.Module):
                     out_ch,
                     use_layer_norm=(i > 0),  # No norm on first layer
                     stride=(1, 1) if i == 0 else (2, 2),
+                    dropout=self.dropout,
                 )
             )
             in_ch = out_ch
@@ -143,6 +153,7 @@ class Discriminator(nn.Module):
                     out_ch,
                     use_layer_norm=(i > 0),
                     stride=(1, 1) if i == 0 else (2, 2),
+                    dropout=self.dropout,
                 )
             )
             in_ch = out_ch
@@ -159,6 +170,7 @@ class Discriminator(nn.Module):
                     out_ch,
                     use_layer_norm=True,
                     stride=(2, 2),
+                    dropout=self.dropout,
                 )
             )
             in_ch = out_ch
@@ -173,15 +185,14 @@ class Discriminator(nn.Module):
             else (self.hr_channels[-1] + self.lr_channels[-1])
         )
         for i, out_ch in enumerate(self.output_channels):
+            conv = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+            if self.use_spectral_norm:
+                conv = nn.utils.spectral_norm(conv)
+
             if i < len(self.output_channels) - 1:
-                output_layers.extend(
-                    [
-                        nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-                        nn.LeakyReLU(0.2, inplace=True),
-                    ]
-                )
+                output_layers.extend([conv, nn.LeakyReLU(0.2, inplace=True)])
             else:
-                output_layers.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1))
+                output_layers.append(conv)
             in_ch = out_ch
 
         self.output_conv = nn.Sequential(*output_layers)
