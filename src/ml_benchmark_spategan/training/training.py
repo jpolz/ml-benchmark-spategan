@@ -55,15 +55,16 @@ from tqdm import tqdm
 from ml_benchmark_spategan.config import config
 from ml_benchmark_spategan.dataloader import dataloader
 from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
-from ml_benchmark_spategan.training.gan_training import train_gan_step
+from ml_benchmark_spategan.training.gan_training import test_gan_step, train_gan_step
+from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
+from ml_benchmark_spategan.training.lr_scheduler import create_warmup_scheduler
 from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
 from ml_benchmark_spategan.utils.normalize import save_normalization_params
 from ml_benchmark_spategan.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
-    plot_predictions,
+    plot_predictions_only,
 )
 
 # Add evaluation directory to path to import diagnostics
@@ -161,6 +162,7 @@ def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, 
 
     return diagnostics_dict
 
+
 def setup_optimizers(cf, generator, discriminator, upsampler, device):
     """Set up optimizers for generator and discriminator based on config."""
     # Optimizers
@@ -190,7 +192,7 @@ def setup_optimizers(cf, generator, discriminator, upsampler, device):
             ),
             weight_decay=cf.training.generator.weight_decay,
         )
-    
+
     if cf.training.discriminator.optimizer == "AdamW":
         disc_opt = torch.optim.AdamW(
             discriminator.parameters(),
@@ -211,8 +213,36 @@ def setup_optimizers(cf, generator, discriminator, upsampler, device):
             ),
             weight_decay=cf.training.discriminator.weight_decay,
         )
-    
-    return gen_opt, disc_opt
+
+    # Create learning rate schedulers
+    warmup_epochs = getattr(cf.training, "warmup_epochs", 5)
+    plateau_epochs = getattr(cf.training, "plateau_epochs", 0)
+    transition_epochs = getattr(cf.training, "transition_epochs", 0)
+    lr_decay_gamma = getattr(cf.training, "lr_decay_gamma", 0.95)
+    warmup_start_lr = getattr(cf.training, "warmup_start_lr", 1e-6)
+
+    gen_scheduler = create_warmup_scheduler(
+        gen_opt,
+        warmup_epochs=warmup_epochs,
+        total_epochs=cf.training.epochs,
+        warmup_start_lr=warmup_start_lr,
+        plateau_epochs=plateau_epochs,
+        transition_epochs=transition_epochs,
+        gamma=lr_decay_gamma,
+    )
+
+    disc_scheduler = create_warmup_scheduler(
+        disc_opt,
+        warmup_epochs=warmup_epochs,
+        total_epochs=cf.training.epochs,
+        warmup_start_lr=warmup_start_lr,
+        plateau_epochs=plateau_epochs,
+        transition_epochs=transition_epochs,
+        gamma=lr_decay_gamma,
+    )
+
+    return gen_opt, disc_opt, gen_scheduler, disc_scheduler
+
 
 def main():
     """Main training function."""
@@ -334,8 +364,10 @@ def main():
         norm_params=norm_params,
     )
 
-    # Optimizers
-    gen_opt, disc_opt = setup_optimizers(cf, generator, discriminator, upsampler, device)
+    # Optimizers and schedulers
+    gen_opt, disc_opt, gen_scheduler, disc_scheduler = setup_optimizers(
+        cf, generator, discriminator, upsampler, device
+    )
 
     # For mixed precision training
     scaler = torch.amp.GradScaler("cuda")
@@ -347,8 +379,18 @@ def main():
     # GAN Training loop
     loss_gen_train = []
     loss_disc_train = []
-    loss_gen_test = []
-    loss_fss_test = []
+
+    # Test loss tracking - now with individual components
+    loss_test_history = {
+        "gen_total": [],
+        "disc_total": [],
+        "l1": [],
+        "mse": [],
+        "gan": [],
+        "fss": [],
+        "disc_real": [],
+        "disc_fake": [],
+    }
 
     # Store diagnostics
     diagnostic_history = {
@@ -457,54 +499,60 @@ def main():
         # Validation
         ##################
 
-        # Validation phase
+        # Validation phase using test_gan_step
         generator.eval()
-        test_losses = []
-        fss_test_losses = []
+        discriminator.eval()
 
-        with torch.no_grad():
-            for batch_idx, (x_batch, y_batch) in enumerate(test_dataloader):
-                if batch_idx >= cf.training.batches_per_validation:
-                    break
+        batch_loss_dicts = []
 
-                x_batch = x_batch.to(device)
-                if upsampler is not None:
-                    x_batch_hr = upsampler(x_batch)
-                else:
-                    x_batch_hr = dataloader.upscale_nn(x_batch)
-                x_batch_hr = dataloader.add_noise_channel(
-                    x_batch_hr
-                )  # add noise to HR or LR?
-                y_batch_2d = y_batch.to(device)
+        for batch_idx, (x_batch, y_batch) in enumerate(test_dataloader):
+            if batch_idx >= cf.training.batches_per_validation:
+                break
 
-                # zero timestep, for diffusion UNET.
-                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
+            x_batch = x_batch.to(device)
+            if upsampler is not None:
+                x_batch_hr = upsampler(x_batch)
+            else:
+                x_batch_hr = dataloader.upscale_nn(x_batch)
+            # Note: test_gan_step doesn't add noise channel
+            y_batch_2d = y_batch.to(device)
 
-                with torch.amp.autocast("cuda"):
-                    match architecture:
-                        case "deepesd":
-                            y_pred = generator(x_batch)
-                        case "spategan":
-                            y_pred = generator(x_batch)
-                        case "diffusion_unet":
-                            y_pred = generator(x_batch_hr, timesteps)
+            # zero timestep, for diffusion UNET.
+            timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
-                    loss = nn.L1Loss()(y_pred, y_batch_2d)
-                    # fss_test_loss = (
-                    #     fss_criterion(y_pred, y_batch_2d)
-                    #     if cf.training.loss_weights.fss > 0
-                    #     else torch.tensor(0.0)
-                    # )
-                    
+            # Use test_gan_step to get all loss components
+            loss_dict = test_gan_step(
+                config=cf,
+                input_image=x_batch,
+                input_image_hr=x_batch_hr,
+                target=y_batch_2d,
+                discriminator=discriminator,
+                generator=generator,
+                criterion=criterion,
+                fss_criterion=fss_criterion,
+                timesteps=timesteps,
+                loss_weights=cf.training.loss_weights,
+                condition_separate_channels=condition_separate_channels,
+            )
+            batch_loss_dicts.append(loss_dict)
 
-                test_losses.append(loss.item())
-                fss_test_losses.append(0.0)
-                # fss_test_losses.append(fss_test_loss.item())
+        # Average losses across batches
+        for key in loss_test_history.keys():
+            values = [d.get(key, 0.0) for d in batch_loss_dicts]
+            epoch_mean = np.mean(values)
+            loss_test_history[key].append(epoch_mean)
 
-        test_loss = np.mean(test_losses)
-        loss_gen_test.append(test_loss)
-        mean_fss_test = np.mean(fss_test_losses)
-        loss_fss_test.append(mean_fss_test)
+        # For backward compatibility with diagnostic computation
+        test_loss = loss_test_history["gen_total"][-1]
+        mean_fss_test = loss_test_history["fss"][-1]
+
+        # Step learning rate schedulers
+        gen_scheduler.step()
+        disc_scheduler.step()
+
+        # Get current learning rates
+        current_gen_lr = gen_opt.param_groups[0]["lr"]
+        current_disc_lr = disc_opt.param_groups[0]["lr"]
 
         # Track best validation loss
         if test_loss < best_val_loss:
@@ -515,17 +563,28 @@ def main():
         if (epoch + 1) % cf.logging.log_frequency == 0 or epoch == 0:
             clear_output(wait=True)
             logger.info(f"Epoch {epoch + 1}/{cf.training.epochs}")
-            logger.info(f"  Generator Loss:     {train_gen_loss:.6f}")
-            logger.info(f"  Discriminator Loss: {train_disc_loss:.6f}")
-            logger.info(f"  Test Loss (L1):     {test_loss:.6f}")
-            logger.info(f"  Test Loss (FSS):     {mean_fss_test:.6f}")
+            logger.info(
+                f"  Generator Loss:     {train_gen_loss:.6f} (LR: {current_gen_lr:.2e})"
+            )
+            logger.info(
+                f"  Discriminator Loss: {train_disc_loss:.6f} (LR: {current_disc_lr:.2e})"
+            )
+            logger.info(f"  Test Loss (Gen Total): {test_loss:.6f}")
+            if loss_test_history["l1"][-1] > 0:
+                logger.info(f"  Test L1:            {loss_test_history['l1'][-1]:.6f}")
+            if loss_test_history["mse"][-1] > 0:
+                logger.info(f"  Test MSE:           {loss_test_history['mse'][-1]:.6f}")
+            if loss_test_history["fss"][-1] > 0:
+                logger.info(f"  Test FSS:           {loss_test_history['fss'][-1]:.6f}")
+            if loss_test_history["gan"][-1] > 0:
+                logger.info(f"  Test GAN:           {loss_test_history['gan'][-1]:.6f}")
             logger.info(
                 f"  Best Val Loss:      {best_val_loss:.6f} (epoch {best_val_epoch})"
             )
 
-            # Plot losses
+            # Plot losses with individual components
             plot_adversarial_losses(
-                loss_gen_train, loss_disc_train, loss_gen_test, loss_fss_test, cf
+                loss_gen_train, loss_disc_train, loss_test_history, cf
             )
 
         ##################
@@ -596,6 +655,8 @@ def main():
                 "discriminator_state_dict": discriminator.state_dict(),
                 "gen_optimizer_state_dict": gen_opt.state_dict(),
                 "disc_optimizer_state_dict": disc_opt.state_dict(),
+                "gen_scheduler_state_dict": gen_scheduler.state_dict(),
+                "disc_scheduler_state_dict": disc_scheduler.state_dict(),
                 "train_gen_loss": train_gen_loss,
                 "train_disc_loss": train_disc_loss,
                 "test_loss": test_loss,
@@ -624,15 +685,25 @@ def main():
                 )  # add noise to HR or LR?
             else:
                 x_vis_up = x_vis
-            logger.info(f"  Plotting sample {idx}")
-            plot_predictions(
+            # logger.info(f"  Plotting sample {idx}")
+            # plot_predictions(
+            #     generator,
+            #     x_vis_up,
+            #     y_vis,
+            #     cf,
+            #     epoch + 1,
+            #     device,
+            #     sample_idx=idx,
+            #     norm_params=norm_p
+            logger.info("Plotting samples 0-2")
+            plot_predictions_only(
                 generator,
                 x_vis_up,
                 y_vis,
                 cf,
                 epoch + 1,
                 device,
-                sample_idx=idx,
+                num_samples=3,
                 norm_params=norm_params,
             )
 
@@ -643,6 +714,8 @@ def main():
         "discriminator_state_dict": discriminator.state_dict(),
         "gen_optimizer_state_dict": gen_opt.state_dict(),
         "disc_optimizer_state_dict": disc_opt.state_dict(),
+        "gen_scheduler_state_dict": gen_scheduler.state_dict(),
+        "disc_scheduler_state_dict": disc_scheduler.state_dict(),
         "diagnostic_history": diagnostic_history,
         "best_val_loss": best_val_loss,
         "best_val_epoch": best_val_epoch,

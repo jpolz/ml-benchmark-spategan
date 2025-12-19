@@ -220,3 +220,129 @@ def train_gan_step(
         disc_loss = loss.item()
 
     return gen_loss, disc_loss
+
+
+def test_gan_step(
+    config,
+    input_image,
+    input_image_hr,
+    target,
+    discriminator,
+    generator,
+    criterion,
+    fss_criterion,
+    timesteps,
+    loss_weights={"l1": 1.0, "gan": 1.0},
+    condition_separate_channels: bool = False,
+):
+    """
+    Performs a single evaluation step for the GAN, computing all loss components.
+
+    Parameters
+    ----------
+    config : Config
+        Configuration object containing model and training parameters.
+    input_image : torch.Tensor
+        Input tensor to the generator, shape (batch, C, H, W).
+    input_image_hr : torch.Tensor
+        High-resolution input tensor for conditioning the discriminator, shape (batch, C, H, W).
+    target : torch.Tensor
+        Ground truth tensor, shape (batch, 1, H, W).
+    discriminator : nn.Module
+        Discriminator model.
+    generator : nn.Module
+        Generator model.
+    criterion : nn.Module
+        Loss function (e.g., BCEWithLogitsLoss).
+    fss_criterion:
+        FSS loss function, if used for pixel-wise loss.
+    timesteps : torch.Tensor
+        Timesteps for diffusion models, shape (batch,).
+    loss_weights : dict, optional
+        Weights for different loss components, by default {'l1': 1.0, 'gan': 1.0}.
+    condition_separate_channels : bool, optional
+        If True, condition the discriminator with separate channels, by default False.
+
+    Returns
+    -------
+    dict
+        Dictionary containing all individual loss components:
+        - 'gen_total': Total generator loss
+        - 'disc_total': Total discriminator loss
+        - 'l1': L1 loss (if computed)
+        - 'mse': MSE loss (if computed)
+        - 'gan': GAN loss (if computed)
+        - 'fss': FSS loss (if computed)
+        - 'disc_real': Discriminator loss on real samples
+        - 'disc_fake': Discriminator loss on fake samples
+    """
+    generator.eval()
+    discriminator.eval()
+
+    # Initialize loss manager
+    loss_manager = GANLossManager(
+        loss_weights=loss_weights,
+        gan_criterion=criterion,
+        fss_criterion=fss_criterion,
+        use_fss=config.training.fss_loss,
+    )
+
+    loss_dict = {}
+
+    with torch.no_grad():
+        # Generate ensemble predictions efficiently
+        gen_ensemble = _generate_ensemble(
+            generator=generator,
+            architecture=config.model.architecture,
+            input_image=input_image,
+            input_image_hr=input_image_hr,
+            timesteps=timesteps,
+            ensemble_size=config.training.ensemble_size,
+        )
+
+        # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)
+        gen_ensemble = gen_ensemble.unsqueeze(2)
+        pred_log = gen_ensemble[:, 0]  # First ensemble member for discriminator
+
+        # Get discriminator outputs
+        disc_fake_output = None
+        disc_real_output = None
+
+        if loss_weights.get("gan", 0.0) > 0.0:
+            if condition_separate_channels:
+                disc_fake_output = discriminator(pred_log, input_image)
+                disc_real_output = discriminator(target, input_image)
+            else:
+                disc_fake_output = discriminator(
+                    torch.cat((pred_log, input_image_hr), dim=1), timesteps
+                )
+                disc_real_output = discriminator(
+                    torch.cat((target, input_image_hr), dim=1), timesteps
+                )
+
+        # Compute generator losses
+        gen_total_loss, gen_loss_components = loss_manager.compute_generator_loss(
+            gen_ensemble=gen_ensemble.squeeze(2),  # Remove channel dim for loss
+            target=target,
+            disc_fake_output=disc_fake_output,
+        )
+
+        loss_dict["gen_total"] = gen_total_loss.item()
+        loss_dict.update(gen_loss_components)
+
+        # Compute discriminator losses if GAN loss is used
+        if loss_weights.get("gan", 0.0) > 0.0 and disc_real_output is not None:
+            disc_total_loss, disc_loss_components = (
+                loss_manager.compute_discriminator_loss(
+                    disc_real_output=disc_real_output,
+                    disc_fake_output=disc_fake_output,
+                    use_label_smoothing=False,  # No label smoothing during evaluation
+                )
+            )
+
+            loss_dict["disc_total"] = disc_total_loss.item()
+            loss_dict.update(disc_loss_components)
+        else:
+            loss_dict["disc_total"] = 0.0
+
+    return loss_dict

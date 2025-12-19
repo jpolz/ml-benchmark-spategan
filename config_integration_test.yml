@@ -76,7 +76,6 @@ model:
   n_output_channels: 1
   dropout_seed: 42
   dropout_ratio: 0.2
-  generator_finalactivation: null
   
   discriminator:
     hr_channels: [32,32,32,32,]  # Simplified discriminator

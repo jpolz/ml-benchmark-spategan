@@ -17,6 +17,14 @@ training:
   batches_per_epoch: null  # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
   n_critic: 1  # number of discriminator updates per generator update
+  
+  # Learning rate scheduler with warmup and exponential decay
+  warmup_epochs: 5  # Number of epochs for linear warmup phase
+  plateau_epochs: 50  # Number of epochs to maintain target LR before decay starts
+  transition_epochs: 300  # Number of epochs over which to transition to decayed LR
+  lr_decay_gamma: 0.98  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
+  warmup_start_lr: 1.0e-6  # Starting learning rate for warmup phase
+  
   generator:
     learning_rate: 0.00005
     optimizer: "AdamW"
@@ -38,12 +46,12 @@ training:
   loss_weights:
     l1: 0.0
     mse: 1.0
-    gan: 1.0
+    gan: 0.1
     fss: 0.0
 
 # Model configuration
 model:
-  architecture: "diffusion_unet" # "diffusion_unet" or "spategan" or "deepesd"
+  architecture: "spategan" # "diffusion_unet" or "spategan" or "deepesd"
   use_learnable_upsampler: false  # Use learnable conv-based upsampling instead of fixed bilinear
   
   # Generator architecture configurations
@@ -80,8 +88,7 @@ model:
   n_output_channels: 1
   dropout_seed: 42
   dropout_ratio: 0.2
-  generator_finalactivation: null # currently changed to norm technique/// "tanh" for minus1_to_plus1 normalization, "softplus" for log normalization, null for standardization
-  
+
   # Discriminator architecture config
   discriminator:
     # High-resolution path channels (for target/prediction at 128x128)
@@ -109,5 +116,5 @@ logging:
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
   checkpoint_frequency: 20 # number of epochs between checkpoints
-  map_frequency: 10 # number of epochs between plotting maps
+  map_frequency: 5 # number of epochs between plotting maps
   diagnostic_frequency: 5 # number of epochs between computing diagnostics

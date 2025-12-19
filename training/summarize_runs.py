@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+import torch
 import yaml
 
 
@@ -41,6 +42,14 @@ def extract_key_params(config):
     params["batch_size"] = training.get("batch_size", "N/A")
     params["epochs"] = training.get("epochs", "N/A")
     params["batches_per_epoch"] = training.get("batches_per_epoch", "N/A")
+    params["ensemble_size"] = training.get("ensemble_size", "N/A")
+    params["n_critic"] = training.get("n_critic", "N/A")
+
+    # Learning rate scheduler parameters
+    params["warmup_epochs"] = training.get("warmup_epochs", "N/A")
+    params["plateau_epochs"] = training.get("plateau_epochs", "N/A")
+    params["transition_epochs"] = training.get("transition_epochs", "N/A")
+    params["lr_decay_gamma"] = training.get("lr_decay_gamma", "N/A")
 
     # Generator optimizer
     gen = training.get("generator", {})
@@ -57,7 +66,10 @@ def extract_key_params(config):
     # Loss weights
     loss_weights = training.get("loss_weights", {})
     params["loss_l1"] = loss_weights.get("l1", "N/A")
+    params["loss_mse"] = loss_weights.get("mse", "N/A")
     params["loss_gan"] = loss_weights.get("gan", "N/A")
+    params["loss_fss"] = loss_weights.get("fss", "N/A")
+    params["fss_loss"] = training.get("fss_loss", "N/A")
 
     # Early stopping
     params["early_stopping"] = training.get("early_stopping", "N/A")
@@ -68,8 +80,44 @@ def extract_key_params(config):
     params["domain"] = data.get("domain", "N/A")
     params["var_target"] = data.get("var_target", "N/A")
     params["normalization"] = data.get("normalization", "N/A")
+    params["training_experiment"] = data.get("training_experiment", "N/A")
+    params["gcm_name"] = data.get("gcm_name", "N/A")
 
     return params
+
+
+def extract_best_metrics(checkpoint_path):
+    """Extract best validation loss and RMSE from checkpoint file."""
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+        best_val_loss = checkpoint.get("best_val_loss", None)
+        best_val_epoch = checkpoint.get("best_val_epoch", None)
+
+        # Try to get best RMSE from diagnostic history
+        diagnostic_history = checkpoint.get("diagnostic_history", {})
+        rmse_values = diagnostic_history.get("rmse", [])
+
+        if rmse_values:
+            best_rmse = min(rmse_values)
+            best_rmse_epoch = rmse_values.index(best_rmse) + 1
+        else:
+            best_rmse = None
+            best_rmse_epoch = None
+
+        return {
+            "best_val_loss": best_val_loss,
+            "best_val_epoch": best_val_epoch,
+            "best_rmse": best_rmse,
+            "best_rmse_epoch": best_rmse_epoch,
+        }
+    except Exception:
+        return {
+            "best_val_loss": None,
+            "best_val_epoch": None,
+            "best_rmse": None,
+            "best_rmse_epoch": None,
+        }
 
 
 def get_run_info(run_dir):
@@ -98,7 +146,34 @@ def get_run_info(run_dir):
 
     # Check for final model in checkpoints subfolder
     checkpoints_dir = run_dir / "checkpoints"
-    params["has_final_model"] = (checkpoints_dir / "final_models.pt").exists()
+    final_model_path = checkpoints_dir / "final_models.pt"
+    params["has_final_model"] = final_model_path.exists()
+
+    # Find checkpoint to extract metrics from
+    checkpoint_to_use = None
+    if final_model_path.exists():
+        checkpoint_to_use = final_model_path
+    elif checkpoints_dir.exists():
+        # Find the latest checkpoint_epoch_XX.pt file
+        checkpoints = list(checkpoints_dir.glob("checkpoint_epoch_*.pt"))
+        if checkpoints:
+            # Sort by epoch number and get the highest
+            epochs_and_paths = [(int(cp.stem.split("_")[-1]), cp) for cp in checkpoints]
+            epochs_and_paths.sort(reverse=True)
+            checkpoint_to_use = epochs_and_paths[0][1]
+
+    # Extract best metrics from checkpoint
+    if checkpoint_to_use:
+        metrics = extract_best_metrics(checkpoint_to_use)
+        params["best_val_loss"] = metrics["best_val_loss"]
+        params["best_val_epoch"] = metrics["best_val_epoch"]
+        params["best_rmse"] = metrics["best_rmse"]
+        params["best_rmse_epoch"] = metrics["best_rmse_epoch"]
+    else:
+        params["best_val_loss"] = None
+        params["best_val_epoch"] = None
+        params["best_rmse"] = None
+        params["best_rmse_epoch"] = None
 
     # Count checkpoints in checkpoints subfolder
     if checkpoints_dir.exists():
@@ -121,6 +196,9 @@ def format_value(value):
     if value == "N/A" or value is None:
         return "-"
     if isinstance(value, float):
+        # Use scientific notation for very small values
+        if abs(value) < 0.001 and value != 0:
+            return f"{value:.2e}"
         return f"{value:.6f}"
     if isinstance(value, bool):
         return "✓" if value else "✗"
@@ -164,15 +242,34 @@ def generate_markdown_table(runs, show_all=False):
     changed_params = detect_changes(runs)
 
     # Define parameter groups and their display order
-    always_show = ["run_id", "timestamp", "has_final_model", "max_checkpoint_epoch"]
+    always_show = [
+        "run_id",
+        "timestamp",
+        "domain",
+        "training_experiment",
+        "has_final_model",
+        "max_checkpoint_epoch",
+        "best_val_loss",
+        "best_val_epoch",
+        "best_rmse",
+        "best_rmse_epoch",
+    ]
 
     model_params = ["architecture", "filter_size", "dropout_ratio"]
     training_params = [
         "batch_size",
         "epochs",
         "batches_per_epoch",
+        "ensemble_size",
+        "n_critic",
         "early_stopping",
         "patience",
+    ]
+    scheduler_params = [
+        "warmup_epochs",
+        "plateau_epochs",
+        "transition_epochs",
+        "lr_decay_gamma",
     ]
     optimizer_params = [
         "gen_lr",
@@ -182,8 +279,14 @@ def generate_markdown_table(runs, show_all=False):
         "disc_optimizer",
         "disc_weight_decay",
     ]
-    loss_params = ["loss_l1", "loss_gan"]
-    data_params = ["domain", "var_target", "normalization"]
+    loss_params = ["loss_l1", "loss_mse", "loss_gan", "loss_fss", "fss_loss"]
+    data_params = [
+        "domain",
+        "var_target",
+        "normalization",
+        "training_experiment",
+        "gcm_name",
+    ]
 
     # Select parameters to show
     if show_all:
@@ -191,12 +294,15 @@ def generate_markdown_table(runs, show_all=False):
             always_show
             + model_params
             + training_params
+            + scheduler_params
             + optimizer_params
             + loss_params
             + data_params
         )
     else:
-        params_to_show = always_show + sorted(changed_params)
+        # Add changed params but avoid duplicates with always_show
+        additional_params = [p for p in sorted(changed_params) if p not in always_show]
+        params_to_show = always_show + additional_params
 
     # Generate header
     headers = []
@@ -205,25 +311,40 @@ def generate_markdown_table(runs, show_all=False):
         "timestamp": "Timestamp",
         "has_final_model": "Final Model",
         "max_checkpoint_epoch": "Max Epoch",
+        "best_val_loss": "Best Val Loss",
+        "best_val_epoch": "Best Val Epoch",
+        "best_rmse": "Best RMSE",
+        "best_rmse_epoch": "Best RMSE Epoch",
         "architecture": "Architecture",
         "filter_size": "Filters",
         "dropout_ratio": "Dropout",
         "batch_size": "Batch Size",
         "epochs": "Epochs",
         "batches_per_epoch": "Batches/Epoch",
+        "ensemble_size": "Ensemble Size",
+        "n_critic": "n_critic",
+        "warmup_epochs": "Warmup",
+        "plateau_epochs": "Plateau",
+        "transition_epochs": "Transition",
+        "lr_decay_gamma": "Decay γ",
         "gen_lr": "Gen LR",
         "gen_optimizer": "Gen Opt",
         "gen_weight_decay": "Gen WD",
         "disc_lr": "Disc LR",
         "disc_optimizer": "Disc Opt",
         "disc_weight_decay": "Disc WD",
-        "loss_l1": "L1 Loss",
-        "loss_gan": "GAN Loss",
+        "loss_l1": "L1",
+        "loss_mse": "MSE",
+        "loss_gan": "GAN",
+        "loss_fss": "FSS",
+        "fss_loss": "FSS Enabled",
         "early_stopping": "Early Stop",
         "patience": "Patience",
         "domain": "Domain",
         "var_target": "Variable",
         "normalization": "Normalization",
+        "training_experiment": "Experiment",
+        "gcm_name": "GCM",
     }
 
     for param in params_to_show:
