@@ -15,6 +15,7 @@ def _generate_ensemble(
     input_image_hr: torch.Tensor,
     timesteps: torch.Tensor,
     ensemble_size: int,
+    noise_std: float = 0.2,
 ) -> torch.Tensor:
     """
     Generate ensemble predictions efficiently.
@@ -26,6 +27,7 @@ def _generate_ensemble(
         input_image_hr: High-resolution input (B, C, 128, 128)
         timesteps: Timesteps for diffusion models
         ensemble_size: Number of ensemble members
+        noise_std: Standard deviation of noise channel for diffusion models
 
     Returns:
         Ensemble predictions (B, ensemble_size, 128, 128)
@@ -47,7 +49,7 @@ def _generate_ensemble(
             gen_ensemble[:, i] = generator(input_image).view(-1, 128, 128)
     elif architecture == "diffusion_unet":
         # Pre-compute noise channel addition outside loop if possible
-        input_with_noise = add_noise_channel(input_image_hr)
+        input_with_noise = add_noise_channel(input_image_hr, noise_std=noise_std)
         for i in range(ensemble_size):
             gen_ensemble[:, i] = generator(input_with_noise, timesteps).view(
                 -1, 128, 128
@@ -149,6 +151,7 @@ def train_gan_step(
                 input_image_hr=input_image_hr,
                 timesteps=timesteps,
                 ensemble_size=config.training.ensemble_size,
+                noise_std=config.training.get("noise_std_gen", 0.0),
             )
 
             # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)
@@ -158,8 +161,14 @@ def train_gan_step(
             # Get discriminator output if using GAN loss
             disc_fake_output = None
             if loss_weights.get("gan", 0.0) > 0.0:
+                added_noise_std = config.training.get("noise_std", 0.0)
+                if added_noise_std > 0.0:
+                    noise_fake = torch.randn_like(pred_log) * added_noise_std
+                    pred_log_noisy = pred_log + noise_fake
+                else:
+                    pred_log_noisy = pred_log
                 if condition_separate_channels:
-                    disc_fake_output = discriminator(pred_log, input_image)
+                    disc_fake_output = discriminator(pred_log_noisy, input_image)
                 else:
                     disc_fake_output = discriminator(
                         torch.cat((pred_log, input_image_hr), dim=1), timesteps
@@ -183,7 +192,7 @@ def train_gan_step(
             if config.model.architecture == "spategan":
                 pred_log = generator(input_image).view(-1, 1, 128, 128)
             elif config.model.architecture == "diffusion_unet":
-                pred_log = generator(add_noise_channel(input_image_hr), timesteps).view(
+                pred_log = generator(add_noise_channel(input_image_hr, noise_std=config.training.get("noise_std_gen", 0.0)), timesteps).view(
                     -1, 1, 128, 128
                 )
             elif config.model.architecture == "deepesd":
@@ -200,11 +209,20 @@ def train_gan_step(
         # Ensure pred_log is detached for discriminator training
         if gen_opt is not None:
             pred_log = pred_log.detach()
+        
+        if config.training.get("noise_std", 0.0) > 0.0:
+            noise_real = torch.randn_like(target) * config.training.noise_std
+            noise_fake = torch.randn_like(pred_log) * config.training.noise_std
+            target_noisy = target + noise_real
+            pred_log_noisy = pred_log + noise_fake
+        else:
+            target_noisy = target
+            pred_log_noisy = pred_log
 
         with amp.autocast("cuda"):
             # Get discriminator outputs for real and fake samples
-            disc_real_output = discriminator(target, input_image)
-            disc_fake_output = discriminator(pred_log, input_image)
+            disc_real_output = discriminator(target_noisy, input_image)
+            disc_fake_output = discriminator(pred_log_noisy, input_image)
 
             # Compute discriminator loss using loss manager
             loss, loss_components = loss_manager.compute_discriminator_loss(
@@ -298,6 +316,7 @@ def test_gan_step(
             input_image_hr=input_image_hr,
             timesteps=timesteps,
             ensemble_size=config.training.ensemble_size,
+            noise_std=config.training.get("noise_std_gen", 0.0),
         )
 
         # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)

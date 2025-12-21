@@ -535,21 +535,22 @@ def plot_predictions_only(
         2, num_samples, height_ratios=[1, 1], hspace=0.25, wspace=0.15
     )
 
-    # Calculate common vmin/vmax across all samples
+    # Convert to numpy for all samples
     y_np_all = y.detach().cpu().numpy()[:, 0]  # (num_samples, H, W)
     y_pred_np_all = y_pred.detach().cpu().numpy()[:, 0]
-
-    if cf.data.var_target == "pr":
-        vmin = 0.1  # Very small positive value
-        vmax = max(y_np_all.max(), y_pred_np_all.max())
-    else:
-        vmin = min(y_np_all.min(), y_pred_np_all.min())
-        vmax = max(y_np_all.max(), y_pred_np_all.max())
 
     # Plot each sample
     for sample_idx in range(num_samples):
         y_np = y_np_all[sample_idx]
         y_pred_np = y_pred_np_all[sample_idx]
+
+        # Calculate individual vmin/vmax for this sample pair
+        if cf.data.var_target == "pr":
+            vmin = 0.1  # Very small positive value
+            vmax = max(y_np.max(), y_pred_np.max())
+        else:
+            vmin = min(y_np.min(), y_pred_np.min())
+            vmax = max(y_np.max(), y_pred_np.max())
 
         # True map (top row)
         ax_true = fig.add_subplot(outer[0, sample_idx], projection=projection)

@@ -28,6 +28,23 @@ class DeepESD(BaseModel):
         self.x_shape = x_shape
         self.y_shape = y_shape
         self.filters_last_conv = filters_last_conv
+        
+        # Backward compatibility: handle both old (batch, height*width) and new (batch, height, width) formats
+        if len(y_shape) == 2:
+            # Old format: (batch, height*width) - assume square output
+            import math
+            n_gridpoints = y_shape[1]
+            side = int(math.sqrt(n_gridpoints))
+            if side * side != n_gridpoints:
+                raise ValueError(f"Cannot infer spatial dimensions from flattened shape {y_shape}")
+            self.output_height = side
+            self.output_width = side
+            self.output_features = n_gridpoints
+        else:
+            # New format: (batch, height, width)
+            self.output_height = y_shape[1]
+            self.output_width = y_shape[2]
+            self.output_features = y_shape[1] * y_shape[2]
 
         self.conv_1 = nn.Conv2d(
             in_channels=self.x_shape[1],
@@ -46,7 +63,7 @@ class DeepESD(BaseModel):
         )
         self.out = nn.Linear(
             in_features=self.x_shape[2] * self.x_shape[3] * self.filters_last_conv,
-            out_features=self.y_shape[1]*self.y_shape[2],
+            out_features=self.output_features,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -56,8 +73,8 @@ class DeepESD(BaseModel):
         x = torch.relu(self.conv_3(x))
         x = torch.flatten(x, start_dim=1)
         x = self.out(x)
-        # reshape from (batch, n_gridpoints) to (batch, y_shape[1], y_shape[2])
-        x = x.view(-1, self.y_shape[1], self.y_shape[2])
+        # reshape from (batch, n_gridpoints) to (batch, height, width)
+        x = x.view(-1, self.output_height, self.output_width)
         return x
 
     def train_step(

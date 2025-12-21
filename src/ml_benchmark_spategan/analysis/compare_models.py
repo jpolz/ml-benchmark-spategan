@@ -69,6 +69,9 @@ def evaluate_model(
     # Reshape if needed (for generators: (B, 1, H, W) -> (B, H*W))
     if predictions.ndim == 4:
         predictions = rearrange(predictions, "b 1 h w -> b (h w)")
+    elif predictions.ndim == 3:
+        # Shape is (b, h, w) - flatten to (b, h*w)
+        predictions = rearrange(predictions, "b h w -> b (h w)")
 
     print(f"Predictions shape: {predictions.shape}")
 
