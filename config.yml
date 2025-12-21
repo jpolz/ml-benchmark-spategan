@@ -1,10 +1,10 @@
 # Data configuration
 data:
-  domain: NZ # one of SA, ALPS or NZ
+  domain: ALPS # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
-  var_target: pr # tasmax or pr 
-  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
+  var_target: tasmax # tasmax or pr 
+  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
@@ -13,6 +13,7 @@ data:
 training:
   batch_size: 32
   ensemble_size: 1
+  noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
   epochs: 500
   batches_per_epoch: null  # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
@@ -20,14 +21,14 @@ training:
   
   # Learning rate scheduler with warmup and exponential decay
   warmup_epochs: 5  # Number of epochs for linear warmup phase
-  plateau_epochs: 30  # Number of epochs to maintain target LR before decay starts
-  transition_epochs: 300  # Number of epochs over which to transition to decayed LR
-  lr_decay_gamma: 0.98  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
+  plateau_epochs: 10  # Number of epochs to maintain target LR before decay starts
+  transition_epochs: 150  # Number of epochs over which to transition to decayed LR
+  lr_decay_gamma: 0.97  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
   warmup_start_lr: 1.0e-6  # Starting learning rate for warmup phase
   
   generator:
-    learning_rate: 0.00005
-    optimizer: "AdamW"
+    learning_rate: 0.0001
+    optimizer: "Adam"
     scheduler: null
     beta1: 0.0
     beta2: 0.999
@@ -39,8 +40,9 @@ training:
     beta1: 0.0
     beta2: 0.999
     weight_decay: 0.0001
-  early_stopping: true
-  patience: 10
+    noise_std: 0.1  # standard deviation of Gaussian noise added to real and fake inputs for regularization
+  # early_stopping: true # not implemented
+  # patience: 10 # not implemented
   checkpoint_dir: "checkpoints"
   fss_loss: False # mainly for precip
   loss_weights:
@@ -51,7 +53,7 @@ training:
 
 # Model configuration
 model:
-  architecture: "spategan" # "diffusion_unet" or "spategan" or "deepesd"
+  architecture: "diffusion_unet" # "diffusion_unet" or "spategan" or "deepesd"
   use_learnable_upsampler: false  # Use learnable conv-based upsampling instead of fixed bilinear
   
   # Generator architecture configurations
@@ -61,12 +63,14 @@ model:
       in_channels: 16  # 15 input + 1 noise
       out_channels: 1
       layers_per_block: 1
-      block_out_channels: [32, 64, 128,]
+      block_out_channels: [32, 64, 128, 256]
       down_block_types:
         - "DownBlock2D"
         - "DownBlock2D"
         - "DownBlock2D"
+        - "AttnDownBlock2D"
       up_block_types:
+        - "AttnUpBlock2D"
         - "UpBlock2D"
         - "UpBlock2D"
         - "UpBlock2D"
