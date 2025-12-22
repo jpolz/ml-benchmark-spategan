@@ -154,8 +154,12 @@ def plot_prediction_comparison(
         norm_clim = None
 
     # Symmetric range for differences
-    diff_max_sample = max(abs(diff_sample.min().values), abs(diff_sample.max().values))
-    diff_max_clim = max(abs(diff_clim.min().values), abs(diff_clim.max().values))
+    if not use_log_scale:
+        diff_max_sample = 5
+        diff_max_clim = 2
+    else:
+        diff_max_sample = 20
+        diff_max_clim = 5
 
     # Row 1: First sample - Target, Prediction, Difference
     titles_row1 = [

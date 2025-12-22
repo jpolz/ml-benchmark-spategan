@@ -21,21 +21,25 @@ echo ""
 cd $SLURM_SUBMIT_DIR
 
 # Configuration
-DOMAIN="SA"
-VAR_TARGET="tasmax" # tasmax or pr
+DOMAIN="NZ"
+# VAR_TARGET="tasmax" # tasmax or pr
+VAR_TARGET="pr" # tasmax or pr
 EXPERIMENT="ESD_pseudo_reality"
 DATA_PATH="/bg/fast/aihydromet/cordexbench/"
-DEEPESD_MODEL="./training/models/model.pt"
+# DEEPESD_MODEL="./training/models/model.pt"
+DEEPESD_MODEL="./training/models/DeepESD_pr_NZ.pt"
 OUTPUT_DIR="./analysis/results/comparison_$(date +%Y%m%d_%H%M)"
 
 # GAN runs to compare (modify this list as needed)
 GAN_RUNS=(
-    "./runs/20251220_1833_w99vqb1e"
+    # "./runs/20251220_1833_w99vqb1e" # Unet SA tasmax
+    "./runs/20251219_2155_6key13zd" # Unet NZ pr
 )
 
 # Optional: Checkpoint epochs to load (one per run, or leave empty for final models)
 # If specified, must have same length as GAN_RUNS
 CHECKPOINT_EPOCHS=(
+    # 200 # "./runs/20251220_1833_w99vqb1e"
     200
 )
 

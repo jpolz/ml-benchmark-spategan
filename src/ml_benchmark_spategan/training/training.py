@@ -58,9 +58,8 @@ from ml_benchmark_spategan.model.registry import create_discriminator, create_ge
 from ml_benchmark_spategan.training.gan_training import test_gan_step, train_gan_step
 from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
 from ml_benchmark_spategan.training.lr_scheduler import create_warmup_scheduler
-from ml_benchmark_spategan.utils.denormalize import predictions_to_xarray
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-from ml_benchmark_spategan.utils.normalize import save_normalization_params
+from ml_benchmark_spategan.utils.normalize import save_normalization_params, predictions_to_xarray
 from ml_benchmark_spategan.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
