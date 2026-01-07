@@ -6,8 +6,10 @@ Script to compare diagnostic histories across multiple training runs.
 import argparse
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import torch
+import yaml
 
 
 def load_diagnostic_history(checkpoint_path):
@@ -18,6 +20,18 @@ def load_diagnostic_history(checkpoint_path):
     except Exception as e:
         print(f"Error loading {checkpoint_path}: {e}")
         return None
+
+
+def load_run_config(run_dir):
+    """Load configuration from a run directory."""
+    config_path = run_dir / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            print(f"Error loading config from {run_dir}: {e}")
+    return None
 
 
 def get_run_label(run_dir):
@@ -33,32 +47,42 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
     Parameters
     ----------
     runs_data : list of dict
-        List of dictionaries with keys 'label', 'history', 'color'
+        List of dictionaries with keys 'label', 'history', 'color', 'config'
     output_path : str
         Path to save the output figure
     """
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
-    axes = axes.flatten()
+    # Create figure with space for table at bottom
+    fig = plt.figure(figsize=(18, 16))
+
+    # Create gridspec: 9 plots in 3x3 grid (top), 1 table (bottom)
+    gs = fig.add_gridspec(4, 3, height_ratios=[1, 1, 1, 0.4], hspace=0.3, wspace=0.3)
+
+    # Create subplots for metrics
+    axes = []
+    for i in range(3):
+        for j in range(3):
+            axes.append(fig.add_subplot(gs[i, j]))
 
     # Define metrics to plot
     metrics = [
-        ("rmse", "RMSE (spatial mean)", 0),
-        ("mae", "MAE (spatial mean)", None),
-        ("bias_mean", "Bias Mean (spatial mean)", 0),
-        ("bias_q95", "Bias Q95 (spatial mean)", 0),
-        ("bias_q98", "Bias Q98 (spatial mean)", 0),
-        ("std_ratio", "Std Ratio (spatial mean)", 1),
-        ("correlation", "Correlation (spatial mean)", None),
-        ("anomaly_correlation", "Anomaly Correlation (spatial mean)", None),
-        ("fss", "FSS (Fractions Skill Score)", None),
+        ("rmse", "RMSE (spatial mean)", None, 0, 12),
+        ("mae", "MAE (spatial mean)", None, 0, 5),
+        ("bias_mean", "Bias Mean (spatial mean)", 0, -0.5, 0.5),
+        ("bias_q95", "Bias Q95 (spatial mean)", 0, -0.5, 0.5),
+        ("bias_q98", "Bias Q98 (spatial mean)", 0, -0.5, 0.5),
+        ("std_ratio", "Std Ratio (spatial mean)", 1, 0.5, 1.5),
+        ("correlation", "Correlation (spatial mean)", None, 0.4, None),
+        ("anomaly_correlation", "Anomaly Correlation (spatial mean)", None, 0.3, None),
+        ("fss", "FSS (Fractions Skill Score)", None, 0, None),
     ]
 
     # Plot each metric
-    for idx, (key, ylabel, hline) in enumerate(metrics):
+    for idx, (key, ylabel, hline, preset_vmin, preset_vmax) in enumerate(metrics):
         ax = axes[idx]
         has_data = False
+        all_values = []
 
-        # Plot each run
+        # Plot each run and collect values
         for run_data in runs_data:
             history = run_data["history"]
             label = run_data["label"]
@@ -66,24 +90,56 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
 
             if key in history and len(history[key]) > 0:
                 epochs = history.get("epochs", list(range(1, len(history[key]) + 1)))
+                values = history[key]
+                all_values.extend(values)
                 ax.plot(
                     epochs,
-                    history[key],
+                    values,
                     "o-",
-                    linewidth=2,
-                    markersize=4,
+                    linewidth=0.6,
+                    markersize=1,
                     color=color,
                     label=label,
-                    alpha=0.8,
+                    alpha=1,
                 )
                 has_data = True
 
         if has_data:
+            # Compute actual data range
+            actual_min = min(all_values)
+            actual_max = max(all_values)
+
+            # Determine final limits
+            if hline == 0:
+                # For plots centered at 0, use symmetrical limits
+                max_abs = max(abs(actual_min), abs(actual_max))
+                if preset_vmax is not None:
+                    max_abs = min(max_abs, preset_vmax)
+                if preset_vmin is not None:
+                    max_abs = min(max_abs, abs(preset_vmin))
+                vmin, vmax = -max_abs, max_abs
+            else:
+                # Use preset limits but constrain to actual data range
+                vmin = (
+                    max(preset_vmin, actual_min)
+                    if preset_vmin is not None
+                    else actual_min
+                )
+                vmax = (
+                    min(preset_vmax, actual_max)
+                    if preset_vmax is not None
+                    else actual_max
+                )
+
+            ax.set_ylim(bottom=vmin, top=vmax)
             ax.set_xlabel("Epoch", fontsize=11)
             ax.set_ylabel(ylabel, fontsize=11)
             ax.set_title(f"{ylabel} Comparison", fontsize=12, fontweight="bold")
+            # 20 yticks
+            ax.yaxis.set_major_locator(plt.MaxNLocator(nbins=20))
+            ax.tick_params(axis="both", which="major", labelsize=8)
             ax.grid(True, alpha=0.3)
-            ax.legend(fontsize=8, loc="best")
+            # ax.legend(fontsize=8, loc="best")
 
             # Add horizontal reference line if specified
             if hline is not None:
@@ -91,14 +147,86 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
         else:
             ax.axis("off")
 
+    # Create configuration table at the bottom
+    ax_table = fig.add_subplot(gs[3, :])
+    ax_table.axis("off")
+
+    # Extract key settings from configs
+    table_data = []
+    header = [
+        "Run ID",
+        "Domain",
+        "Variable",
+        "Experiment",
+        "Architecture",
+        "Oro",
+        "GAN λ",
+    ]
+
+    for run_data in runs_data:
+        config = run_data.get("config")
+        if config:
+            model_cfg = config.get("model", {})
+            training_cfg = config.get("training", {})
+            data_cfg = config.get("data", {})
+
+            run_id = run_data["label"][:22]  # Truncate for space
+            domain = data_cfg.get("domain", "?")[:5]
+            var_target = data_cfg.get("var_target", "?")[:6]
+            experiment = data_cfg.get("training_experiment", "?")[:15]
+            architecture = model_cfg.get("architecture", "?")[:15]
+            use_oro = "✓" if data_cfg.get("use_orography", False) else "✗"
+            gan_weight = (
+                f"{training_cfg.get('loss_weights', None).get('gan', None):.1e}"
+                if training_cfg.get("loss_weights") is not None
+                else "?"
+            )
+
+            table_data.append(
+                [
+                    run_id,
+                    domain,
+                    var_target,
+                    experiment,
+                    architecture,
+                    use_oro,
+                    gan_weight,
+                ]
+            )
+
+    if table_data:
+        # Create table with colors matching the plot lines
+        cell_colors = []
+        for i, run_data in enumerate(runs_data):
+            color = run_data["color"]
+            # Convert to RGBA and set alpha for better text visibility
+            rgba = mcolors.to_rgba(color, alpha=0.2)
+            cell_colors.append([rgba] * len(header))
+
+        table = ax_table.table(
+            cellText=table_data,
+            colLabels=header,
+            cellLoc="center",
+            loc="center",
+            colWidths=[0.15, 0.08, 0.08, 0.15, 0.15, 0.05, 0.10],
+            cellColours=cell_colors,
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1, 2)
+
+        # Style header
+        for i in range(len(header)):
+            table[(0, i)].set_facecolor("#cccccc")
+            table[(0, i)].set_text_props(weight="bold")
+
     plt.suptitle(
         "Diagnostic Metrics Comparison Across Runs",
         fontsize=16,
         fontweight="bold",
         y=0.995,
     )
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"Comparison plot saved to {output_path}")
     plt.show()
     plt.close()
@@ -184,11 +312,21 @@ def main():
             print(f"Warning: No diagnostic history in {checkpoint_path}, skipping")
             continue
 
+        # Load run configuration
+        config = load_run_config(run_dir)
+
         # Get run label and color
         label = get_run_label(run_dir)
         color = colors[i % len(colors)]
 
-        runs_data.append({"label": label, "history": history, "color": color})
+        runs_data.append(
+            {
+                "label": label,
+                "history": history,
+                "color": color,
+                "config": config,
+            }
+        )
 
     if not runs_data:
         print("Error: No valid runs found")

@@ -57,9 +57,12 @@ from ml_benchmark_spategan.dataloader import dataloader
 from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
 from ml_benchmark_spategan.training.gan_training import test_gan_step, train_gan_step
 from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
-from ml_benchmark_spategan.training.lr_scheduler import create_warmup_scheduler
+from ml_benchmark_spategan.training.lr_scheduler import setup_optimizers
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-from ml_benchmark_spategan.utils.normalize import save_normalization_params, predictions_to_xarray
+from ml_benchmark_spategan.utils.normalize import (
+    predictions_to_xarray,
+    save_normalization_params,
+)
 from ml_benchmark_spategan.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
@@ -162,87 +165,6 @@ def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, 
     return diagnostics_dict
 
 
-def setup_optimizers(cf, generator, discriminator, upsampler, device):
-    """Set up optimizers for generator and discriminator based on config."""
-    # Optimizers
-    if upsampler is not None:
-        # Include upsampler parameters with generator
-        gen_params = list(generator.parameters()) + list(upsampler.parameters())
-    else:
-        gen_params = generator.parameters()
-
-    if cf.training.generator.optimizer == "AdamW":
-        gen_opt = torch.optim.AdamW(
-            gen_params,
-            lr=cf.training.generator.learning_rate,
-            betas=(
-                cf.training.generator.beta1,
-                cf.training.generator.beta2,
-            ),
-            weight_decay=cf.training.generator.weight_decay,
-        )
-    elif cf.training.generator.optimizer == "Adam":
-        gen_opt = torch.optim.Adam(
-            gen_params,
-            lr=cf.training.generator.learning_rate,
-            betas=(
-                cf.training.generator.beta1,
-                cf.training.generator.beta2,
-            ),
-            weight_decay=cf.training.generator.weight_decay,
-        )
-
-    if cf.training.discriminator.optimizer == "AdamW":
-        disc_opt = torch.optim.AdamW(
-            discriminator.parameters(),
-            lr=cf.training.discriminator.learning_rate,
-            betas=(
-                cf.training.discriminator.beta1,
-                cf.training.discriminator.beta2,
-            ),
-            weight_decay=cf.training.discriminator.weight_decay,
-        )
-    elif cf.training.discriminator.optimizer == "Adam":
-        disc_opt = torch.optim.Adam(
-            discriminator.parameters(),
-            lr=cf.training.discriminator.learning_rate,
-            betas=(
-                cf.training.discriminator.beta1,
-                cf.training.discriminator.beta2,
-            ),
-            weight_decay=cf.training.discriminator.weight_decay,
-        )
-
-    # Create learning rate schedulers
-    warmup_epochs = getattr(cf.training, "warmup_epochs", 5)
-    plateau_epochs = getattr(cf.training, "plateau_epochs", 0)
-    transition_epochs = getattr(cf.training, "transition_epochs", 0)
-    lr_decay_gamma = getattr(cf.training, "lr_decay_gamma", 0.95)
-    warmup_start_lr = getattr(cf.training, "warmup_start_lr", 1e-6)
-
-    gen_scheduler = create_warmup_scheduler(
-        gen_opt,
-        warmup_epochs=warmup_epochs,
-        total_epochs=cf.training.epochs,
-        warmup_start_lr=warmup_start_lr,
-        plateau_epochs=plateau_epochs,
-        transition_epochs=transition_epochs,
-        gamma=lr_decay_gamma,
-    )
-
-    disc_scheduler = create_warmup_scheduler(
-        disc_opt,
-        warmup_epochs=warmup_epochs,
-        total_epochs=cf.training.epochs,
-        warmup_start_lr=warmup_start_lr,
-        plateau_epochs=plateau_epochs,
-        transition_epochs=transition_epochs,
-        gamma=lr_decay_gamma,
-    )
-
-    return gen_opt, disc_opt, gen_scheduler, disc_scheduler
-
-
 def main():
     """Main training function."""
     # Parse command line arguments
@@ -265,8 +187,16 @@ def main():
 
     cf = config.load_config_from_yaml(config_path)
 
-    # Set up run directory
-    run_id = config.generate_run_id()
+    # Set up run directory - use RUN_ID from environment if provided (for grid searches)
+    run_id = os.environ.get("RUN_ID")
+    if run_id:
+        logger_msg = f"Using pre-generated RUN_ID from environment: {run_id}"
+        print(logger_msg)  # Print before logging is set up
+    else:
+        run_id = config.generate_run_id()
+        logger_msg = f"Generated new RUN_ID: {run_id}"
+        print(logger_msg)
+
     run_dir = config.setup_experiment_directory(project_base, run_id)
     cf.logging.run_id = run_id
     cf.logging.run_dir = run_dir
@@ -365,7 +295,7 @@ def main():
 
     # Optimizers and schedulers
     gen_opt, disc_opt, gen_scheduler, disc_scheduler = setup_optimizers(
-        cf, generator, discriminator, upsampler, device
+        cf, generator, discriminator, upsampler
     )
 
     # For mixed precision training
@@ -416,6 +346,9 @@ def main():
     x_vis, y_vis = next(val_iter)
     x_vis, y_vis = x_vis.to(device), y_vis.to(device)
 
+    if cf.data.use_orography:
+        orography = dataloader_train.dataset.orography.to(device)
+
     for epoch in range(cf.training.epochs):
         # Training phase
         epoch_gen_losses = []
@@ -445,12 +378,19 @@ def main():
             n_critic = getattr(cf.training, "n_critic", 1)
             disc_losses_batch = []
 
+            # repeat orography for each sample in batch if used
+            if cf.data.use_orography:
+                orography_batch = orography.repeat(x_batch.shape[0], 1, 1).unsqueeze(1)
+            else:
+                orography_batch = None
+
             for _ in range(n_critic):
                 # Train discriminator only
                 _, disc_loss = train_gan_step(
                     config=cf,
                     input_image=x_batch,
                     input_image_hr=x_batch_hr,
+                    orography=orography_batch,
                     target=y_batch_2d,
                     step=epoch * len(dataloader_train) + batch_idx,
                     discriminator=discriminator,
@@ -471,6 +411,7 @@ def main():
                 config=cf,
                 input_image=x_batch,
                 input_image_hr=x_batch_hr,
+                orography=orography_batch,
                 target=y_batch_2d,
                 step=epoch * len(dataloader_train) + batch_idx,
                 discriminator=discriminator,
@@ -519,11 +460,18 @@ def main():
             # zero timestep, for diffusion UNET.
             timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
+            # repeat orography for each sample in batch if used
+            if cf.data.use_orography:
+                orography_batch = orography.repeat(x_batch.shape[0], 1, 1).unsqueeze(1)
+            else:
+                orography_batch = None
+
             # Use test_gan_step to get all loss components
             loss_dict = test_gan_step(
                 config=cf,
                 input_image=x_batch,
                 input_image_hr=x_batch_hr,
+                orography=orography_batch,
                 target=y_batch_2d,
                 discriminator=discriminator,
                 generator=generator,
@@ -607,6 +555,16 @@ def main():
                         x_batch_hr = upsampler(x_batch)
                     else:
                         x_batch_hr = dataloader.upscale_nn(x_batch)
+
+                    # Concatenate orography if available (before adding noise)
+                    if cf.data.use_orography:
+                        orography_batch_diag = orography.repeat(
+                            x_batch.shape[0], 1, 1
+                        ).unsqueeze(1)
+                        x_batch_hr = torch.cat(
+                            [x_batch_hr, orography_batch_diag], dim=1
+                        )
+
                     x_batch_hr = dataloader.add_noise_channel(x_batch_hr)
 
                     y_batch = torch.flatten(y_batch, start_dim=1)
@@ -679,6 +637,12 @@ def main():
                     x_vis_up = upsampler(x_vis)
                 else:
                     x_vis_up = dataloader.upscale_nn(x_vis)
+                # Concatenate orography if available (before adding noise)
+                if cf.data.use_orography:
+                    orography_batch_vis = orography.repeat(
+                        x_vis.shape[0], 1, 1
+                    ).unsqueeze(1)
+                    x_vis_up = torch.cat([x_vis_up, orography_batch_vis], dim=1)
                 x_vis_up = dataloader.add_noise_channel(
                     x_vis_up
                 )  # add noise to HR or LR?

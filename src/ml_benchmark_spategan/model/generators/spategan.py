@@ -279,6 +279,7 @@ class SpaGANWrapper:
         config,
         checkpoint_epoch: int = None,
         device: torch.device = None,
+        orography: torch.Tensor = None,
     ):
         from pathlib import Path
 
@@ -287,6 +288,7 @@ class SpaGANWrapper:
         self.device = device or torch.device("cpu")
         self.run_dir = Path(run_dir)
         self.config = config
+        self.orography = orography  # Store orography if provided
 
         # Initialize generator based on architecture
         self._load_generator()
@@ -414,6 +416,20 @@ class SpaGANWrapper:
                     x_hr = self.upsampler(x)
                 else:
                     x_hr = upscale_bilinear(x, target_size=(128, 128))
+
+                # Concatenate orography if available and configured
+                if (
+                    self.config.data.get("use_orography", False)
+                    and self.orography is not None
+                ):
+                    # Repeat orography for each sample in batch
+                    orography_batch = (
+                        self.orography.repeat(x.shape[0], 1, 1)
+                        .unsqueeze(1)
+                        .to(self.device)
+                    )
+                    x_hr = torch.cat([x_hr, orography_batch], dim=1)
+
                 x_with_noise = add_noise_channel(x_hr, noise_std=0.2)
 
                 # Generate

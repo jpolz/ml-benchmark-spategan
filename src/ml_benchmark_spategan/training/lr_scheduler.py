@@ -66,6 +66,87 @@ def create_warmup_scheduler(
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
+
+def setup_optimizers(cf, generator, discriminator, upsampler):
+    """Set up optimizers for generator and discriminator based on config."""
+    # Optimizers
+    if upsampler is not None:
+        # Include upsampler parameters with generator
+        gen_params = list(generator.parameters()) + list(upsampler.parameters())
+    else:
+        gen_params = generator.parameters()
+
+    if cf.training.generator.optimizer == "AdamW":
+        gen_opt = torch.optim.AdamW(
+            gen_params,
+            lr=cf.training.generator.learning_rate,
+            betas=(
+                cf.training.generator.beta1,
+                cf.training.generator.beta2,
+            ),
+            weight_decay=cf.training.generator.weight_decay,
+        )
+    elif cf.training.generator.optimizer == "Adam":
+        gen_opt = torch.optim.Adam(
+            gen_params,
+            lr=cf.training.generator.learning_rate,
+            betas=(
+                cf.training.generator.beta1,
+                cf.training.generator.beta2,
+            ),
+            weight_decay=cf.training.generator.weight_decay,
+        )
+
+    if cf.training.discriminator.optimizer == "AdamW":
+        disc_opt = torch.optim.AdamW(
+            discriminator.parameters(),
+            lr=cf.training.discriminator.learning_rate,
+            betas=(
+                cf.training.discriminator.beta1,
+                cf.training.discriminator.beta2,
+            ),
+            weight_decay=cf.training.discriminator.weight_decay,
+        )
+    elif cf.training.discriminator.optimizer == "Adam":
+        disc_opt = torch.optim.Adam(
+            discriminator.parameters(),
+            lr=cf.training.discriminator.learning_rate,
+            betas=(
+                cf.training.discriminator.beta1,
+                cf.training.discriminator.beta2,
+            ),
+            weight_decay=cf.training.discriminator.weight_decay,
+        )
+
+    # Create learning rate schedulers
+    warmup_epochs = getattr(cf.training, "warmup_epochs", 5)
+    plateau_epochs = getattr(cf.training, "plateau_epochs", 0)
+    transition_epochs = getattr(cf.training, "transition_epochs", 0)
+    lr_decay_gamma = getattr(cf.training, "lr_decay_gamma", 0.95)
+    warmup_start_lr = getattr(cf.training, "warmup_start_lr", 1e-6)
+
+    gen_scheduler = create_warmup_scheduler(
+        gen_opt,
+        warmup_epochs=warmup_epochs,
+        total_epochs=cf.training.epochs,
+        warmup_start_lr=warmup_start_lr,
+        plateau_epochs=plateau_epochs,
+        transition_epochs=transition_epochs,
+        gamma=lr_decay_gamma,
+    )
+
+    disc_scheduler = create_warmup_scheduler(
+        disc_opt,
+        warmup_epochs=warmup_epochs,
+        total_epochs=cf.training.epochs,
+        warmup_start_lr=warmup_start_lr,
+        plateau_epochs=plateau_epochs,
+        transition_epochs=transition_epochs,
+        gamma=lr_decay_gamma,
+    )
+
+    return gen_opt, disc_opt, gen_scheduler, disc_scheduler
+
 ###################################################################################
 # ONLY FOR VISUALIZATION AND DEBUGGING BELOW
 ###################################################################################

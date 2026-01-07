@@ -4,84 +4,105 @@
 # Data configuration
 data:
   domain: ALPS # one of SA, ALPS or NZ
-  training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
+  training_experiment: Emulator_hist_future # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr # tasmax or pr 
   normalization: "mp1p1_input_m1p1log_target"
   num_workers: 2  # Reduced for faster initialization
   t_past: 0
-  t_future: 0
+  t_future: 0  
+  use_orography: true  # whether to include orography as additional static input
 
-# Training configuration - minimal settings for quick testing
+# Training configuration
 training:
-  batch_size: 2  # Reduced batch size for faster epochs
+  batch_size: 2
   ensemble_size: 1
-  epochs: 10  # Minimal number of epochs for integration test
-  batches_per_epoch: 5  # Very small number for quick runs
-  batches_per_validation: 5  # Reduced validation batches
-  n_critic: 2
+  noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
+  epochs: 3
+  batches_per_epoch: 5  # set to null to use all data; otherwise set an integer value
+  batches_per_validation: 2  # set to null to use all data; otherwise set an integer value
+  n_critic: 2  # number of discriminator updates per generator update
+  
+  # Learning rate scheduler with warmup and exponential decay
+  warmup_epochs: 5  # Number of epochs for linear warmup phase
+  plateau_epochs: 10  # Number of epochs to maintain target LR before decay starts
+  transition_epochs: 150  # Number of epochs over which to transition to decayed LR
+  lr_decay_gamma: 0.97  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
+  warmup_start_lr: 1.0e-6  # Starting learning rate for warmup phase
+  
   generator:
     learning_rate: 0.0001
-    optimizer: "AdamW"
+    optimizer: "Adam"
     scheduler: null
     beta1: 0.0
     beta2: 0.999
     weight_decay: 0.0001
   discriminator:
-    learning_rate: 0.001
+    learning_rate: 0.0005
     optimizer: "AdamW"
     scheduler: null
     beta1: 0.0
     beta2: 0.999
     weight_decay: 0.0001
-  early_stopping: false  # Disable for predictable test duration
-  patience: 10
+    noise_std: 0.1  # standard deviation of Gaussian noise added to real and fake inputs for regularization
+  # early_stopping: true # not implemented
+  # patience: 10 # not implemented
   checkpoint_dir: "checkpoints"
-  fss_loss: False
+  fss_loss: False # mainly for precip
   loss_weights:
-    l1: 1.0
-    mse: 0.0
-    gan: 0.05
-    fss: 0.0
+    l1: 0.5
+    mse: 1.0
+    gan: 0.01
+    fss: 0.01
 
-# Model configuration - simplified architecture
+# Model configuration
 model:
-  architecture: "spategan"
-  use_learnable_upsampler: false
+  architecture: "diffusion_unet" # "diffusion_unet" or "spategan" or "deepesd"
+  use_learnable_upsampler: false  # Use learnable conv-based upsampling instead of fixed bilinear
   
+  # Generator architecture configurations
   generator:
-    # diffusion_unet:
-    #   sample_size: [128, 128]
-    #   in_channels: 16  # 15 input + 1 noise
-    #   out_channels: 1
-    #   layers_per_block: 1
-    #   block_out_channels: [32, 64]  # Reduced depth for faster training
-    #   down_block_types:
-    #     - "DownBlock2D"  # No attention for faster training
-    #     - "DownBlock2D"
-    #   up_block_types:
-    #     - "UpBlock2D"
-    #     - "UpBlock2D"
+    diffusion_unet:
+      sample_size: [128, 128]
+      in_channels: 17  # 15 input + 1 noise
+      out_channels: 1
+      layers_per_block: 1
+      block_out_channels: [32, 64,]
+      down_block_types:
+        - "DownBlock2D"
+        - "DownBlock2D"
+      up_block_types:
+        - "UpBlock2D"
+        - "UpBlock2D"
     spategan:
-      filter_size: 12
+      filter_size: 96
       n_input_channels: 15
       n_output_channels: 1
       dropout_seed: 42
       dropout_ratio: 0.2
+    deepesd:
+      x_shape: [1,15,16,16]
+      y_shape: [1,128,128]
+      filters_last_conv: 1
   
-  # Legacy fields
-  discriminator_architecture: "spategan"
-  filter_size: 64  # Reduced filter size
+  # Legacy fields for backward compatibility
+  discriminator_architecture: "spategan" # "unet" or "spategan"
+  filter_size: 96
   n_input_channels: 15
   n_output_channels: 1
   dropout_seed: 42
   dropout_ratio: 0.2
-  
+
+  # Discriminator architecture config
   discriminator:
     hr_channels: [32,32,32,32,]  # Simplified discriminator
     lr_channels: [32,]
     combined_channels: [64,]
     output_channels: [32, 1]
+    # Dropout rate for regularization (0.0 to disable)
+    dropout: 0.3
+    # Enable spectral normalization for stability
+    spectral_norm: true
 
 # Evaluation configuration
 evaluation:
@@ -93,7 +114,7 @@ logging:
   level: "INFO"
   log_dir: "logs"
   wandb: false
-  log_frequency: 5  # Log less frequently
-  checkpoint_frequency: 10  # Save checkpoints every 10 epochs
-  map_frequency: 10
-  diagnostic_frequency: 10
+  log_frequency: 2  # Log less frequently
+  checkpoint_frequency: 2  # Save checkpoints every x epochs
+  map_frequency: 2
+  diagnostic_frequency: 2

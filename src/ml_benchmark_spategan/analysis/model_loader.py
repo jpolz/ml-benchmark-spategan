@@ -51,6 +51,7 @@ def load_model(model_type: str, **kwargs):
             config=kwargs["config"],
             checkpoint_epoch=kwargs.get("checkpoint_epoch", None),
             device=device,
+            orography=kwargs.get("orography", None),
         )
 
     else:

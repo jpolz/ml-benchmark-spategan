@@ -13,6 +13,7 @@ def _generate_ensemble(
     architecture: str,
     input_image: torch.Tensor,
     input_image_hr: torch.Tensor,
+    orography: torch.Tensor,
     timesteps: torch.Tensor,
     ensemble_size: int,
     noise_std: float = 0.2,
@@ -25,6 +26,7 @@ def _generate_ensemble(
         architecture: Model architecture name
         input_image: Low-resolution input (B, C, 16, 16)
         input_image_hr: High-resolution input (B, C, 128, 128)
+        orography: Orography input (B, 1, 128, 128)
         timesteps: Timesteps for diffusion models
         ensemble_size: Number of ensemble members
         noise_std: Standard deviation of noise channel for diffusion models
@@ -48,8 +50,13 @@ def _generate_ensemble(
         for i in range(ensemble_size):
             gen_ensemble[:, i] = generator(input_image).view(-1, 128, 128)
     elif architecture == "diffusion_unet":
+        # Concatenate orography if available
+        if orography is not None:
+            input_with_oro = torch.cat([input_image_hr, orography], dim=1)
+        else:
+            input_with_oro = input_image_hr
         # Pre-compute noise channel addition outside loop if possible
-        input_with_noise = add_noise_channel(input_image_hr, noise_std=noise_std)
+        input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
         for i in range(ensemble_size):
             gen_ensemble[:, i] = generator(input_with_noise, timesteps).view(
                 -1, 128, 128
@@ -67,6 +74,7 @@ def train_gan_step(
     config,
     input_image,
     input_image_hr,
+    orography,
     target,
     step,
     discriminator,
@@ -91,6 +99,8 @@ def train_gan_step(
         Input tensor to the generator, shape (batch, C, H, W).
     input_image_hr : torch.Tensor
         High-resolution input tensor for conditioning the discriminator, shape (batch, C, H, W).
+    orography : torch.Tensor
+        Orography input tensor, shape (batch, 1, H, W).
     target : torch.Tensor
         Ground truth tensor, shape (batch, 1, H, W).
     step : int
@@ -149,6 +159,7 @@ def train_gan_step(
                 architecture=config.model.architecture,
                 input_image=input_image,
                 input_image_hr=input_image_hr,
+                orography=orography,
                 timesteps=timesteps,
                 ensemble_size=config.training.ensemble_size,
                 noise_std=config.training.get("noise_std_gen", 0.0),
@@ -192,9 +203,18 @@ def train_gan_step(
             if config.model.architecture == "spategan":
                 pred_log = generator(input_image).view(-1, 1, 128, 128)
             elif config.model.architecture == "diffusion_unet":
-                pred_log = generator(add_noise_channel(input_image_hr, noise_std=config.training.get("noise_std_gen", 0.0)), timesteps).view(
-                    -1, 1, 128, 128
-                )
+                # Concatenate orography if available
+                if orography is not None:
+                    input_with_oro = torch.cat([input_image_hr, orography], dim=1)
+                else:
+                    input_with_oro = input_image_hr
+                pred_log = generator(
+                    add_noise_channel(
+                        input_with_oro,
+                        noise_std=config.training.get("noise_std_gen", 0.0),
+                    ),
+                    timesteps,
+                ).view(-1, 1, 128, 128)
             elif config.model.architecture == "deepesd":
                 pred_log = generator(input_image).view(-1, 1, 128, 128)
             else:
@@ -209,7 +229,7 @@ def train_gan_step(
         # Ensure pred_log is detached for discriminator training
         if gen_opt is not None:
             pred_log = pred_log.detach()
-        
+
         if config.training.get("noise_std", 0.0) > 0.0:
             noise_real = torch.randn_like(target) * config.training.noise_std
             noise_fake = torch.randn_like(pred_log) * config.training.noise_std
@@ -244,6 +264,7 @@ def test_gan_step(
     config,
     input_image,
     input_image_hr,
+    orography,
     target,
     discriminator,
     generator,
@@ -264,6 +285,8 @@ def test_gan_step(
         Input tensor to the generator, shape (batch, C, H, W).
     input_image_hr : torch.Tensor
         High-resolution input tensor for conditioning the discriminator, shape (batch, C, H, W).
+    orography : torch.Tensor
+        Orography input tensor, shape (batch, 1, H, W).
     target : torch.Tensor
         Ground truth tensor, shape (batch, 1, H, W).
     discriminator : nn.Module
@@ -314,6 +337,7 @@ def test_gan_step(
             architecture=config.model.architecture,
             input_image=input_image,
             input_image_hr=input_image_hr,
+            orography=orography,
             timesteps=timesteps,
             ensemble_size=config.training.ensemble_size,
             noise_std=config.training.get("noise_std_gen", 0.0),

@@ -13,3 +13,4 @@ logs/
 runs_summary.md
 analysis/results/
 .vscode/
+tmp_cfg/

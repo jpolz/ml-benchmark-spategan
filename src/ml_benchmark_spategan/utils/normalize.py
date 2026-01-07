@@ -17,6 +17,7 @@ def normalize_predictors(
     y_train: xr.Dataset,
     y_test: xr.Dataset,
     normalization: str,
+    orography: xr.DataArray = None,
 ) -> Tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset, dict]:
     """
     Normalize predictors and predictands according to specified method.
@@ -28,6 +29,7 @@ def normalize_predictors(
         y_test: Test predictands
         normalization: Normalization method ('standardization', 'minmax', 'minus1_to_plus1',
                       'mp1p1_input_m1p1log_target', 'm1p1_log_target', 'std_log_target', etc.)
+        orography: Static orography field (optional)
 
     Returns:
         Tuple of (x_train_norm, x_test_norm, y_train_norm, y_test_norm, norm_params)
@@ -47,11 +49,24 @@ def normalize_predictors(
     norm_params["y_mean"] = y_train.mean("time")
     norm_params["y_std"] = y_train.std("time")
 
+    # Normalize orography if provided (using same strategy as predictors)
+    if orography is not None:
+        norm_params["orog_min"] = orography.min()
+        norm_params["orog_max"] = orography.max()
+        norm_params["orog_mean"] = orography.mean()
+        norm_params["orog_std"] = orography.std()
+
     if normalization == "standardization":
         x_train_norm = (x_train - norm_params["x_mean"]) / norm_params["x_std"]
         x_test_norm = (x_test - norm_params["x_mean"]) / norm_params["x_std"]
         y_train_norm = y_train
         y_test_norm = y_test
+
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_mean"]) / norm_params[
+                "orog_std"
+            ]
+            norm_params["orography_norm"] = orography_norm
 
     elif normalization == "minmax":
         x_train_norm = (x_train - norm_params["x_min"]) / (
@@ -63,6 +78,12 @@ def normalize_predictors(
         y_train_norm = y_train
         y_test_norm = y_test
 
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_min"]) / (
+                norm_params["orog_max"] - norm_params["orog_min"]
+            )
+            norm_params["orography_norm"] = orography_norm
+
     elif normalization == "std_log_target":
         x_train_norm = (x_train - norm_params["x_mean"]) / norm_params["x_std"]
         x_test_norm = (x_test - norm_params["x_mean"]) / norm_params["x_std"]
@@ -70,6 +91,12 @@ def normalize_predictors(
         # log transform y
         y_train_norm = np.log1p(y_train + 1e-6)
         y_test_norm = np.log1p(y_test + 1e-6)
+
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_mean"]) / norm_params[
+                "orog_std"
+            ]
+            norm_params["orography_norm"] = orography_norm
 
     elif normalization == "mp1p1_input_m1p1log_target":
         # x sample normalization to [-1, 1]
@@ -100,6 +127,13 @@ def normalize_predictors(
         y_train_norm = y_train_norm.astype(np.float32)
         y_test_norm = y_test_norm.astype(np.float32)
 
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_min"]) / (
+                norm_params["orog_max"] - norm_params["orog_min"]
+            )
+            orography_norm = orography_norm * 2 - 1
+            norm_params["orography_norm"] = orography_norm
+
     elif normalization == "m1p1_log_target":
         x_train_norm = (x_train - norm_params["x_min"]) / (
             norm_params["x_max"] - norm_params["x_min"]
@@ -113,6 +147,13 @@ def normalize_predictors(
         # log transform y
         y_train_norm = np.log1p(y_train + 1e-6)
         y_test_norm = np.log1p(y_test + 1e-6)
+
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_min"]) / (
+                norm_params["orog_max"] - norm_params["orog_min"]
+            )
+            orography_norm = orography_norm * 2 - 1
+            norm_params["orography_norm"] = orography_norm
 
     elif normalization == "minus1_to_plus1":
         x_train_norm = (x_train - norm_params["x_min"]) / (
@@ -133,12 +174,22 @@ def normalize_predictors(
         )
         y_test_norm = y_test_norm * 2 - 1
 
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_min"]) / (
+                norm_params["orog_max"] - norm_params["orog_min"]
+            )
+            orography_norm = orography_norm * 2 - 1
+            norm_params["orography_norm"] = orography_norm
+
     else:
         # No normalization
         x_train_norm = x_train
         x_test_norm = x_test
         y_train_norm = y_train
         y_test_norm = y_test
+
+        if orography is not None:
+            norm_params["orography_norm"] = orography
 
     return x_train_norm, x_test_norm, y_train_norm, y_test_norm, norm_params
 

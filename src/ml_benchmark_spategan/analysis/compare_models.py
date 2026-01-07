@@ -17,6 +17,7 @@ from ml_benchmark_spategan.config import config
 from ml_benchmark_spategan.dataloader.dataloader import (
     EmulationTestDataset,
     load_cordex_data,
+    load_orography,
     split_train_test,
 )
 from ml_benchmark_spategan.utils.normalize import normalize_predictors
@@ -28,6 +29,42 @@ from ml_benchmark_spategan.visualization.plot_results import (
 # Add evaluation directory to path to import diagnostics
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "evaluation"))
 import diagnostics
+import indices
+
+
+def compute_psd_score(
+    psd_test: xr.DataArray,
+    psd_pred: xr.DataArray,
+    wavenumber_min: int = 1,
+    wavenumber_max: int = 60,
+) -> float:
+    """
+    Compute PSD similarity score as RMSE in log space.
+
+    Lower values indicate better match to the test data's spectral characteristics.
+
+    Args:
+        psd_test: Power spectral density of test data
+        psd_pred: Power spectral density of predicted data
+        wavenumber_min: Minimum wavenumber to include (default: 1)
+        wavenumber_max: Maximum wavenumber to include (default: 60)
+
+    Returns:
+        RMSE in log10 space
+    """
+    # Filter by wavenumber range
+    wavenumber = psd_test["wavenumber"].values
+    mask = (wavenumber >= wavenumber_min) & (wavenumber <= wavenumber_max)
+
+    # Add small epsilon to avoid log(0)
+    eps = 1e-10
+    log_psd_test = np.log10(psd_test.values[mask] + eps)
+    log_psd_pred = np.log10(psd_pred.values[mask] + eps)
+
+    # Compute RMSE in log space
+    log_rmse = np.sqrt(np.mean((log_psd_test - log_psd_pred) ** 2))
+
+    return float(log_rmse)
 
 
 def evaluate_model(
@@ -84,9 +121,24 @@ def evaluate_model(
         raise ValueError(f"Invalid domain: {domain}")
 
     # Convert predictions to xarray
-    y_pred_stack = y_test.stack(gridpoint=spatial_dims).copy(deep=True)
-    y_pred_stack[var_target].values = predictions
-    y_pred = y_pred_stack.unstack()
+    # Check if we have 2D coordinates (meshgrid) like in ALPS rotated pole
+    coord_is_2d = y_test[spatial_dims[0]].ndim > 1 or y_test[spatial_dims[1]].ndim > 1
+
+    if coord_is_2d:
+        # For 2D coordinates, we can't use stack (MultiIndex requires 1D coords)
+        # Instead, directly assign to reshaped data
+        y_pred = y_test.copy(deep=True)
+        # Reshape predictions from (time, gridpoint) to (time, dim0, dim1)
+        spatial_shape = y_test[var_target].shape[
+            1:
+        ]  # Get spatial shape (e.g., 128, 128)
+        predictions_reshaped = predictions.reshape(predictions.shape[0], *spatial_shape)
+        y_pred[var_target].values = predictions_reshaped
+    else:
+        # For 1D coordinates, use the standard stack/unstack method
+        y_pred_stack = y_test.stack(gridpoint=spatial_dims).copy(deep=True)
+        y_pred_stack[var_target].values = predictions
+        y_pred = y_pred_stack.unstack()
 
     # Calculate metrics
     metrics = {}
@@ -133,6 +185,87 @@ def evaluate_model(
     # Power Spectral Density
     psd_test, psd_pred = diagnostics.psd(x0=y_test, x1=y_pred, var=var_target)
 
+    # Compute PSD score (RMSE in log space)
+    metrics["psd_score"] = compute_psd_score(psd_test, psd_pred)
+
+    # Variable-specific climate indices
+    if var_target == "tasmax":
+        # Temperature-specific indices
+        # Summer days (days > 25°C, threshold=300K for data in Kelvin)
+        su_test = indices.su(y_test, var_target, threshold=298.15)  # 25°C in Kelvin
+        su_pred = indices.su(y_pred, var_target, threshold=298.15)
+        metrics["su_bias"] = float(
+            (su_pred[var_target] - su_test[var_target]).mean().values.item()
+        )
+
+        # Mean annual maximum temperature
+        txx_test = indices.txx(y_test, var_target)
+        txx_pred = indices.txx(y_pred, var_target)
+        metrics["txx_bias"] = float(
+            (txx_pred[var_target] - txx_test[var_target]).mean().values.item()
+        )
+
+        # Mean annual minimum temperature
+        txn_test = indices.txn(y_test, var_target)
+        txn_pred = indices.txn(y_pred, var_target)
+        metrics["txn_bias"] = float(
+            (txn_pred[var_target] - txn_test[var_target]).mean().values.item()
+        )
+
+        print(f"Summer Days Bias: {metrics['su_bias']:.4f}")
+        print(f"TXx (Annual Max) Bias: {metrics['txx_bias']:.4f}")
+        print(f"TXn (Annual Min) Bias: {metrics['txn_bias']:.4f}")
+
+    elif var_target == "pr":
+        # Precipitation-specific indices
+        # Maximum 1-day precipitation
+        rx1day_test = indices.rx1day(y_test, var_target)
+        rx1day_pred = indices.rx1day(y_pred, var_target)
+        metrics["rx1day_bias"] = float(
+            (rx1day_pred[var_target] - rx1day_test[var_target]).mean().values.item()
+        )
+
+        # Simple precipitation intensity (mean precip on wet days)
+        sdii_test = indices.sdii(y_test, var_target, wet_threshold=1.0)
+        sdii_pred = indices.sdii(y_pred, var_target, wet_threshold=1.0)
+        metrics["sdii_bias"] = float(
+            (sdii_pred[var_target] - sdii_test[var_target]).mean().values.item()
+        )
+
+        # Consecutive dry days
+        cdd_test = indices.cdd(y_test, var_target, dry_threshold=1.0)
+        cdd_pred = indices.cdd(y_pred, var_target, dry_threshold=1.0)
+        metrics["cdd_bias"] = float(
+            (cdd_pred[var_target] - cdd_test[var_target]).mean().values.item()
+        )
+
+        # Consecutive wet days
+        cwd_test = indices.cwd(y_test, var_target, wet_threshold=1.0)
+        cwd_pred = indices.cwd(y_pred, var_target, wet_threshold=1.0)
+        metrics["cwd_bias"] = float(
+            (cwd_pred[var_target] - cwd_test[var_target]).mean().values.item()
+        )
+
+        print(f"Rx1day (Max 1-day Precip) Bias: {metrics['rx1day_bias']:.4f}")
+        print(f"SDII (Precip Intensity) Bias: {metrics['sdii_bias']:.4f}")
+        print(f"CDD (Max Dry Spell) Bias: {metrics['cdd_bias']:.4f}")
+        print(f"CWD (Max Wet Spell) Bias: {metrics['cwd_bias']:.4f}")
+
+    # Universal indices (applicable to both variables)
+    # Lag-1 autocorrelation
+    lag1_test = indices.lag1_corr(y_test, var_target)
+    lag1_pred = indices.lag1_corr(y_pred, var_target)
+    metrics["lag1_corr_bias"] = float(
+        (lag1_pred[var_target] - lag1_test[var_target]).mean().values.item()
+    )
+
+    # Interannual variability
+    interann_test = indices.interannual_var(y_test, var_target)
+    interann_pred = indices.interannual_var(y_pred, var_target)
+    metrics["interannual_var_bias"] = float(
+        (interann_pred[var_target] - interann_test[var_target]).mean().values.item()
+    )
+
     # Print metrics
     print(f"Mean RMSE: {metrics['mean_rmse']:.4f}")
     print(f"Mean Bias: {metrics['mean_bias']:.4f}")
@@ -142,6 +275,9 @@ def evaluate_model(
     print(f"Q95 Bias: {metrics['q95_bias']:.4f}")
     print(f"Q98 Bias: {metrics['q98_bias']:.4f}")
     print(f"Std Ratio: {metrics['std_ratio']:.4f}")
+    print(f"PSD Score (log RMSE): {metrics['psd_score']:.4f}")
+    print(f"Lag-1 Autocorr Bias: {metrics['lag1_corr_bias']:.4f}")
+    print(f"Interannual Var Bias: {metrics['interannual_var_bias']:.4f}")
 
     return {
         "predictions": y_pred,
@@ -309,9 +445,38 @@ def main():
             normalization = cf.data.get("normalization", "standardization")
             print(f"Using normalization: {normalization}")
 
-            x_train_norm, x_test_norm, y_train_norm, y_test_norm, _ = (
-                normalize_predictors(x_train, x_test, y_train, y_test, normalization)
+            # Load orography if needed
+            orography_da = None
+            if cf.data.get("use_orography", False):
+                print("Loading orography data...")
+                orography_da = load_orography(
+                    domain=args.domain,
+                    training_experiment=args.experiment,
+                    data_path=args.data_path,
+                )
+                print(f"Orography loaded with shape: {orography_da.shape}")
+
+            x_train_norm, x_test_norm, y_train_norm, y_test_norm, norm_params = (
+                normalize_predictors(
+                    x_train,
+                    x_test,
+                    y_train,
+                    y_test,
+                    normalization,
+                    orography=orography_da,
+                )
             )
+
+            # Get normalized orography from norm_params if it was provided
+            orography = None
+            if orography_da is not None:
+                orography_norm = norm_params.get("orography_norm")
+                if orography_norm is not None:
+                    orography = torch.from_numpy(orography_norm.values).float()
+                    print(f"Normalized orography shape: {orography.shape}")
+                else:
+                    print("Warning: Orography was not normalized!")
+
             x_train_tensor, y_train_tensor = prepare_torch_data(
                 x_train_norm, y_train_norm, args.domain
             )
@@ -331,6 +496,7 @@ def main():
                     config=cf,
                     checkpoint_epoch=checkpoint_epoch,
                     device=device,
+                    orography=orography,
                 )
                 results[model_name] = evaluate_model(
                     gan,
@@ -346,25 +512,70 @@ def main():
                 continue
 
     # Print summary
-    print("\n" + "=" * 95)
-    print("SUMMARY")
-    print("=" * 95)
-    print(
-        f"{'Model':<30} | {'RMSE':<8} | {'MAE':<8} | {'Corr':<6} | {'AnoCorr':<7} | {'Bias':<8} | {'StdRatio':<8}"
-    )
-    print("-" * 95)
-    for model_name, result in results.items():
-        metrics = result["metrics"]
+    print("\n" + "=" * 200)
+    print("SUMMARY - ALL METRICS")
+    print("=" * 200)
+
+    # Determine which variable-specific metrics to show
+    first_result = next(iter(results.values()))
+    var_target = args.var_target
+
+    if var_target == "tasmax":
+        # Temperature metrics
         print(
-            f"{model_name:30s} | "
-            f"{metrics['mean_rmse']:8.4f} | "
-            f"{metrics['mean_mae']:8.4f} | "
-            f"{metrics['mean_correlation']:6.4f} | "
-            f"{metrics['mean_anomaly_correlation']:7.4f} | "
-            f"{metrics['mean_bias']:8.4f} | "
-            f"{metrics['std_ratio']:8.4f}"
+            f"{'Model':<30} | {'RMSE':<8} | {'MAE':<8} | {'Corr':<6} | {'AnoCorr':<7} | {'Bias':<8} | "
+            f"{'Q95':<8} | {'Q98':<8} | {'StdRatio':<8} | {'PSD':<8} | "
+            f"{'SU':<8} | {'TXx':<8} | {'TXn':<8} | {'Lag1':<8} | {'InterAnn':<8}"
         )
-    print("=" * 95)
+        print("-" * 200)
+        for model_name, result in results.items():
+            metrics = result["metrics"]
+            print(
+                f"{model_name:30s} | "
+                f"{metrics['mean_rmse']:8.4f} | "
+                f"{metrics['mean_mae']:8.4f} | "
+                f"{metrics['mean_correlation']:6.4f} | "
+                f"{metrics['mean_anomaly_correlation']:7.4f} | "
+                f"{metrics['mean_bias']:8.4f} | "
+                f"{metrics['q95_bias']:8.4f} | "
+                f"{metrics['q98_bias']:8.4f} | "
+                f"{metrics['std_ratio']:8.4f} | "
+                f"{metrics['psd_score']:8.4f} | "
+                f"{metrics['su_bias']:8.4f} | "
+                f"{metrics['txx_bias']:8.4f} | "
+                f"{metrics['txn_bias']:8.4f} | "
+                f"{metrics['lag1_corr_bias']:8.4f} | "
+                f"{metrics['interannual_var_bias']:8.4f}"
+            )
+    else:
+        # Precipitation metrics
+        print(
+            f"{'Model':<30} | {'RMSE':<8} | {'MAE':<8} | {'Corr':<6} | {'AnoCorr':<7} | {'Bias':<8} | "
+            f"{'Q95':<8} | {'Q98':<8} | {'StdRatio':<8} | {'PSD':<8} | "
+            f"{'Rx1day':<8} | {'SDII':<8} | {'CDD':<8} | {'CWD':<8} | {'Lag1':<8} | {'InterAnn':<8}"
+        )
+        print("-" * 200)
+        for model_name, result in results.items():
+            metrics = result["metrics"]
+            print(
+                f"{model_name:30s} | "
+                f"{metrics['mean_rmse']:8.4f} | "
+                f"{metrics['mean_mae']:8.4f} | "
+                f"{metrics['mean_correlation']:6.4f} | "
+                f"{metrics['mean_anomaly_correlation']:7.4f} | "
+                f"{metrics['mean_bias']:8.4f} | "
+                f"{metrics['q95_bias']:8.4f} | "
+                f"{metrics['q98_bias']:8.4f} | "
+                f"{metrics['std_ratio']:8.4f} | "
+                f"{metrics['psd_score']:8.4f} | "
+                f"{metrics['rx1day_bias']:8.4f} | "
+                f"{metrics['sdii_bias']:8.4f} | "
+                f"{metrics['cdd_bias']:8.4f} | "
+                f"{metrics['cwd_bias']:8.4f} | "
+                f"{metrics['lag1_corr_bias']:8.4f} | "
+                f"{metrics['interannual_var_bias']:8.4f}"
+            )
+    print("=" * 200)
 
     # Create PSD comparison plot
     if len(results) > 0:

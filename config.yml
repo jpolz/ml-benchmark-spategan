@@ -1,6 +1,6 @@
 # Data configuration
 data:
-  domain: ALPS # one of SA, ALPS or NZ
+  domain: SA # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: tasmax # tasmax or pr 
@@ -8,13 +8,14 @@ data:
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
+  use_orography: false  # whether to include orography as additional static input
 
 # Training configuration
 training:
   batch_size: 32
   ensemble_size: 1
   noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
-  epochs: 500
+  epochs: 150
   batches_per_epoch: null  # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
   n_critic: 2  # number of discriminator updates per generator update
@@ -24,10 +25,10 @@ training:
   plateau_epochs: 10  # Number of epochs to maintain target LR before decay starts
   transition_epochs: 150  # Number of epochs over which to transition to decayed LR
   lr_decay_gamma: 0.97  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
-  warmup_start_lr: 1.0e-6  # Starting learning rate for warmup phase
+  warmup_start_lr: 1.0e-7  # Starting learning rate for warmup phase
   
   generator:
-    learning_rate: 0.0001
+    learning_rate: 0.00001
     optimizer: "Adam"
     scheduler: null
     beta1: 0.0
@@ -35,7 +36,7 @@ training:
     weight_decay: 0.0001
   discriminator:
     learning_rate: 0.0005
-    optimizer: "AdamW"
+    optimizer: "Adam"
     scheduler: null
     beta1: 0.0
     beta2: 0.999
@@ -123,6 +124,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 20 # number of epochs between checkpoints
-  map_frequency: 5 # number of epochs between plotting maps
+  checkpoint_frequency: 75 # number of epochs between checkpoints
+  map_frequency: 20 # number of epochs between plotting maps
   diagnostic_frequency: 5 # number of epochs between computing diagnostics

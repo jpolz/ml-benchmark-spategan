@@ -77,6 +77,31 @@ def load_cordex_data(
     return predictor, predictand
 
 
+def load_orography(
+    domain: str,
+    training_experiment: str,
+    data_path: str = "/bg/fast/aihydromet/cordexbench/",
+) -> xr.DataArray:
+    """
+    Load orography (static elevation field) from CORDEX benchmark data.
+
+    Args:
+        domain: Domain name ('SA', 'NZ', 'ALPS')
+        training_experiment: Experiment name ('ESD_pseudo_reality' or 'Emulator_hist_future')
+        data_path: Path to data directory
+
+    Returns:
+        Orography DataArray
+    """
+    orography_filename = (
+        f"{data_path}/{domain}/{domain}_domain/train/{training_experiment}/"
+        f"predictors/Static_fields.nc"
+    )
+    static_fields = xr.open_dataset(orography_filename)
+    orography = static_fields["orog"]
+    return orography
+
+
 def split_train_test(
     predictor: xr.Dataset,
     predictand: xr.Dataset,
@@ -133,14 +158,23 @@ class EmulationTrainingDataset(Dataset):
     Args:
         x_data: Input predictor data (GCM variables). Can be numpy array or torch tensor.
         y_data: Target predictand data (RCM output). Can be numpy array or torch tensor.
+        orography: Static orography field. Can be numpy array or torch tensor. Optional.
     """
 
-    def __init__(self, x_data, y_data):
+    def __init__(self, x_data, y_data, orography=None):
         if not isinstance(x_data, torch.Tensor):
             x_data = torch.tensor(x_data)
         if not isinstance(y_data, torch.Tensor):
             y_data = torch.tensor(y_data)
         self.x_data, self.y_data = x_data, y_data
+        
+        # Cache orography as internal variable
+        if orography is not None:
+            if not isinstance(orography, torch.Tensor):
+                orography = torch.tensor(orography)
+            self.orography = orography
+        else:
+            self.orography = None
 
     def __len__(self):
         return len(self.x_data)
@@ -165,9 +199,10 @@ class EmulationTrainingDatasetSpate(Dataset):
         y_data: Target predictand data (RCM output). Can be numpy array or torch tensor.
         t_future: Number of future time steps to use as input
         t_past: Number of past time steps to use as input
+        orography: Static orography field. Can be numpy array or torch tensor. Optional.
     """
 
-    def __init__(self, x_data, y_data, times, t_future=1, t_past=1):
+    def __init__(self, x_data, y_data, times, t_future=1, t_past=1, orography=None):
         if not isinstance(x_data, torch.Tensor):
             x_data = torch.tensor(x_data)
         if not isinstance(y_data, torch.Tensor):
@@ -176,6 +211,14 @@ class EmulationTrainingDatasetSpate(Dataset):
         self.times = times
         self.t_future = t_future
         self.t_past = t_past
+        
+        # Cache orography as internal variable
+        if orography is not None:
+            if not isinstance(orography, torch.Tensor):
+                orography = torch.tensor(orography)
+            self.orography = orography
+        else:
+            self.orography = None
 
     def __len__(self):
         return len(self.x_data)
@@ -213,12 +256,21 @@ class EmulationTestDataset(Dataset):
 
     Args:
         x_data: Input predictor data (GCM variables). Can be numpy array or torch tensor.
+        orography: Static orography field. Can be numpy array or torch tensor. Optional.
     """
 
-    def __init__(self, x_data):
+    def __init__(self, x_data, orography=None):
         if not isinstance(x_data, torch.Tensor):
             x_data = torch.tensor(x_data)
         self.x_data = x_data
+        
+        # Cache orography as internal variable
+        if orography is not None:
+            if not isinstance(orography, torch.Tensor):
+                orography = torch.tensor(orography)
+            self.orography = orography
+        else:
+            self.orography = None
 
     def __len__(self):
         return len(self.x_data)
@@ -275,6 +327,15 @@ def build_dataloaders(cf):
         var_target=cf.data.var_target,
         data_path=cf.data.data_path,
     )
+    if cf.data.use_orography:
+        # Load orography (static field)
+        orography = load_orography(
+            domain=cf.data.domain,
+            training_experiment=cf.data.training_experiment,
+            data_path=cf.data.data_path,
+        )
+    else:
+        orography = None
 
     # Set GCM name in config for backward compatibility
     if cf.data.domain == "ALPS":
@@ -300,6 +361,7 @@ def build_dataloaders(cf):
             y_train=y_train,
             y_test=y_test,
             normalization=cf.data.normalization,
+            orography=orography,
         )
     )
 
@@ -321,6 +383,13 @@ def build_dataloaders(cf):
     )
     y_test_stack_array = torch.from_numpy(y_test_stack.to_array()[0, :].values)
 
+    # Convert normalized orography to tensor
+    orography_norm = norm_params_partial.get("orography_norm")
+    if orography_norm is not None:
+        orography_array = torch.from_numpy(orography_norm.values).float()
+    else:
+        orography_array = None
+
     # 2D y_test
     y_train_stack_array = y_train_stack_array.view(-1, 1, 128, 128)
 
@@ -330,6 +399,7 @@ def build_dataloaders(cf):
         times=times_train,
         t_future=cf.data.t_future,
         t_past=cf.data.t_past,
+        orography=orography_array,
     )
 
     if cf.training.batches_per_epoch is not None:
@@ -352,7 +422,7 @@ def build_dataloaders(cf):
     y_test_stack_array = y_test_stack_array.view(-1, 1, 128, 128)
 
     dataset_test = EmulationTrainingDataset(
-        x_data=x_test_stand_array, y_data=y_test_stack_array
+        x_data=x_test_stand_array, y_data=y_test_stack_array, orography=orography_array
     )
     test_dataloader = DataLoader(
         dataset=dataset_test,

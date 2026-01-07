@@ -42,7 +42,7 @@ def create_generator(config, device: torch.device = None):
         print(
             summary(
                 generator,
-                input_size=[(1, 16, 128, 128), (1,)],
+                input_size=[(1, unet_cfg.in_channels, unet_cfg.sample_size[0], unet_cfg.sample_size[1]), (1,)],
                 dtypes=[torch.float32, torch.long],
                 verbose=0,
             )
