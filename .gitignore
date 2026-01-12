@@ -14,3 +14,6 @@ runs_summary.md
 analysis/results/
 .vscode/
 tmp_cfg/
+comparison_scripts/compare_runs_SA*
+comparison_scripts/compare_runs_AL*
+comparison_scripts/compare_runs_NZ*
