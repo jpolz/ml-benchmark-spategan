@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=spategan_comp
-##SBATCH --partition=ccgp
+#SBATCH --partition=ccgp
 ##SBATCH --partition=grace
-#SBATCH --partition=sockdolager
+##SBATCH --partition=sockdolager
 #SBATCH --time=24:00:00
 #SBATCH --exclusive
-##SBATCH --qos=nvgpu
-#SBATCH --qos=sdlgpu
+#SBATCH --qos=nvgpu
+##SBATCH --qos=sdlgpu
 #SBATCH --output=logs/slurm_compare_%j.out
 #SBATCH --error=logs/slurm_compare_%j.err
 
@@ -21,26 +21,36 @@ echo ""
 cd $SLURM_SUBMIT_DIR
 
 # Configuration
-DOMAIN="NZ"
+DOMAIN="SA"
 # VAR_TARGET="tasmax" # tasmax or pr
-VAR_TARGET="pr" # tasmax or pr
+VAR_TARGET="tasmax" # tasmax or pr
 EXPERIMENT="ESD_pseudo_reality"
 DATA_PATH="/bg/fast/aihydromet/cordexbench/"
-# DEEPESD_MODEL="./training/models/model.pt"
-DEEPESD_MODEL="./training/models/DeepESD_pr_NZ.pt"
+DEEPESD_MODEL="./training/models/model.pt"
+# DEEPESD_MODEL="./training/models/DeepESD_pr_NZ.pt"
 OUTPUT_DIR="./analysis/results/comparison_$(date +%Y%m%d_%H%M)"
 
 # GAN runs to compare (modify this list as needed)
 GAN_RUNS=(
-    # "./runs/20251220_1833_w99vqb1e" # Unet SA tasmax
-    "./runs/20251219_2155_6key13zd" # Unet NZ pr
+    # "./runs/20251228_1013_vqzthclf" # Unet SA tasmax with orography
+    # "./runs/20251223_0202_40z7snll" # Unet SA tasmax no orography
+    # "./runs/20260106_2224_9jkutucc" # Unet SA tasmax with orography
+    # "./runs/20260106_2224_8z16kjik" # Unet SA tasmax no orography
+    # "./runs/20260106_2224_9jkutucc" # Unet SA tasmax with orography
+    "./runs/20260106_2224_8z16kjik" # Unet SA tasmax no orography λ_disc=0
+    "./runs/20260107_2332_dvpmoltj" # Unet SA tasmax with orography λ_disc=0.05
+    "./runs/20260107_2332_brjuhfpr" # Unet SA tasmax no orography λ_disc=0.001
+    "./runs/20260108_2252_hzg78mh0" # Unet SA tasmax no orography λ_disc=0.0001
+
 )
 
 # Optional: Checkpoint epochs to load (one per run, or leave empty for final models)
 # If specified, must have same length as GAN_RUNS
 CHECKPOINT_EPOCHS=(
-    # 200 # "./runs/20251220_1833_w99vqb1e"
-    200
+    150
+    150
+    150
+    150
 )
 
 # Build the command
@@ -56,18 +66,24 @@ if [ -f "$DEEPESD_MODEL" ]; then
     CMD="$CMD --deepesd-model $DEEPESD_MODEL"
 fi
 
-# Add GAN runs
+# Add GAN runs (validate that directories exist first)
+VALID_RUNS=()
 for run in "${GAN_RUNS[@]}"; do
     if [ -d "$run" ]; then
-        CMD="$CMD --gan-runs $run"
+        VALID_RUNS+=("$run")
+    else
+        echo "Warning: Run directory not found: $run"
     fi
 done
 
-# Add checkpoint epochs if specified
+# Add all valid runs as a single --gan-runs argument
+if [ ${#VALID_RUNS[@]} -gt 0 ]; then
+    CMD="$CMD --gan-runs ${VALID_RUNS[@]}"
+fi
+
+# Add checkpoint epochs if specified (all as a single argument)
 if [ ${#CHECKPOINT_EPOCHS[@]} -gt 0 ]; then
-    for epoch in "${CHECKPOINT_EPOCHS[@]}"; do
-        CMD="$CMD --checkpoint-epochs $epoch"
-    done
+    CMD="$CMD --checkpoint-epochs ${CHECKPOINT_EPOCHS[@]}"
 fi
 
 # Print and execute command

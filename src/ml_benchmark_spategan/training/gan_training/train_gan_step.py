@@ -8,6 +8,44 @@ from ml_benchmark_spategan.training.gan_training.losses import GANLossManager
 from ml_benchmark_spategan.utils.interpolate import add_noise_channel
 
 
+def compute_gradient_penalty_r1(
+    discriminator: nn.Module,
+    real_data: torch.Tensor,
+    condition: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute R1 gradient penalty (regularization on real data gradients).
+
+    This prevents discriminator from becoming too confident and encourages
+    smoother decision boundaries.
+
+    Args:
+        discriminator: Discriminator model
+        real_data: Real samples (B, C, H, W)
+        condition: Conditioning input (B, C, h, w)
+
+    Returns:
+        Gradient penalty scalar
+    """
+    real_data.requires_grad_(True)
+
+    disc_real = discriminator(real_data, condition)
+
+    # Compute gradients w.r.t. real data
+    gradients = torch.autograd.grad(
+        outputs=disc_real.sum(),
+        inputs=real_data,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    # R1 penalty: ||∇D(x)||²
+    penalty = gradients.pow(2).reshape(gradients.shape[0], -1).sum(1).mean()
+
+    return penalty
+
+
 def _generate_ensemble(
     generator: nn.Module,
     architecture: str,
@@ -55,9 +93,9 @@ def _generate_ensemble(
             input_with_oro = torch.cat([input_image_hr, orography], dim=1)
         else:
             input_with_oro = input_image_hr
-        # Pre-compute noise channel addition outside loop if possible
-        input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
+        # Add DIFFERENT noise for each ensemble member
         for i in range(ensemble_size):
+            input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
             gen_ensemble[:, i] = generator(input_with_noise, timesteps).view(
                 -1, 128, 128
             )
@@ -172,9 +210,10 @@ def train_gan_step(
             # Get discriminator output if using GAN loss
             disc_fake_output = None
             if loss_weights.get("gan", 0.0) > 0.0:
-                added_noise_std = config.training.get("noise_std", 0.0)
-                if added_noise_std > 0.0:
-                    noise_fake = torch.randn_like(pred_log) * added_noise_std
+                # Apply consistent noise (same std as discriminator training)
+                noise_std = config.training.get("noise_std", 0.0)
+                if noise_std > 0.0:
+                    noise_fake = torch.randn_like(pred_log) * noise_std
                     pred_log_noisy = pred_log + noise_fake
                 else:
                     pred_log_noisy = pred_log
@@ -230,9 +269,13 @@ def train_gan_step(
         if gen_opt is not None:
             pred_log = pred_log.detach()
 
-        if config.training.get("noise_std", 0.0) > 0.0:
-            noise_real = torch.randn_like(target) * config.training.noise_std
-            noise_fake = torch.randn_like(pred_log) * config.training.noise_std
+        # Apply consistent noise to discriminator inputs
+        # This helps stabilize training and prevents mode collapse
+        noise_std = config.training.get("noise_std", 0.0)
+        if noise_std > 0.0:
+            # Use fixed noise std (not random like before)
+            noise_real = torch.randn_like(target) * noise_std
+            noise_fake = torch.randn_like(pred_log) * noise_std
             target_noisy = target + noise_real
             pred_log_noisy = pred_log + noise_fake
         else:
@@ -244,11 +287,25 @@ def train_gan_step(
             disc_real_output = discriminator(target_noisy, input_image)
             disc_fake_output = discriminator(pred_log_noisy, input_image)
 
+            # Compute gradient penalty for regularization
+            gp_weight = getattr(config.training, "gradient_penalty_weight", 10.0)
+            if gp_weight > 0.0:
+                # Compute R1 penalty on real data
+                gradient_penalty = compute_gradient_penalty_r1(
+                    discriminator=discriminator,
+                    real_data=target_noisy,
+                    condition=input_image,
+                )
+            else:
+                gradient_penalty = None
+
             # Compute discriminator loss using loss manager
             loss, loss_components = loss_manager.compute_discriminator_loss(
                 disc_real_output=disc_real_output,
                 disc_fake_output=disc_fake_output,
                 use_label_smoothing=True,
+                gradient_penalty=gradient_penalty,
+                gp_weight=gp_weight,
             )
 
         scaler.scale(loss).backward()

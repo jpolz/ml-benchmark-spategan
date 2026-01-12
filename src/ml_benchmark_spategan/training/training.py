@@ -38,6 +38,7 @@ The module saves:
 ############
 
 import argparse
+import json
 import logging
 import os
 import pathlib
@@ -57,6 +58,9 @@ from ml_benchmark_spategan.dataloader import dataloader
 from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
 from ml_benchmark_spategan.training.gan_training import test_gan_step, train_gan_step
 from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
+from ml_benchmark_spategan.training.gan_training.train_gan_step import (
+    _generate_ensemble,
+)
 from ml_benchmark_spategan.training.lr_scheduler import setup_optimizers
 from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 from ml_benchmark_spategan.utils.normalize import (
@@ -74,9 +78,18 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).parent.parent.parent.parent / "evaluation")
 )
 import diagnostics
+import indices
 
 
-def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, epoch):
+def compute_diagnostics(
+    y_pred_all,
+    y_true_all,
+    norm_params,
+    cf,
+    mean_fss_test,
+    epoch,
+    ensemble_preds_all=None,
+):
     """
     Compute diagnostic metrics from predictions and ground truth.
 
@@ -87,6 +100,7 @@ def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, 
         cf: Configuration object
         mean_fss_test: Mean FSS test loss for this epoch
         epoch: Current epoch number
+        ensemble_preds_all: Optional ensemble predictions (B, N_ensemble, H, W) for variability computation
 
     Returns:
         dict: Dictionary of diagnostic metrics
@@ -98,52 +112,63 @@ def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, 
         y_pred_all, y_true_all, norm_params, var_name=cf.data.var_target
     )
 
-    # Compute diagnostics
-    rmse = diagnostics.rmse(true_ds, pred_ds, var=cf.data.var_target, dim="time")
+    var_target = cf.data.var_target
+
+    # Compute standard diagnostics
+    rmse = diagnostics.rmse(true_ds, pred_ds, var=var_target, dim="time")
     bias_mean = diagnostics.bias_index(
         true_ds,
         pred_ds,
-        index_fn=lambda x, **kw: x[cf.data.var_target].mean("time"),
+        index_fn=lambda x, **kw: x[var_target].mean("time"),
     )
     bias_q95 = diagnostics.bias_index(
         true_ds,
         pred_ds,
-        index_fn=lambda x, **kw: x[cf.data.var_target].quantile(0.95, dim="time"),
+        index_fn=lambda x, **kw: x[var_target].quantile(0.95, dim="time"),
     )
     bias_q98 = diagnostics.bias_index(
         true_ds,
         pred_ds,
-        index_fn=lambda x, **kw: x[cf.data.var_target].quantile(0.98, dim="time"),
+        index_fn=lambda x, **kw: x[var_target].quantile(0.98, dim="time"),
     )
     std_ratio = diagnostics.ratio_index(
         true_ds,
         pred_ds,
-        index_fn=lambda x, **kw: x[cf.data.var_target].std("time"),
+        index_fn=lambda x, **kw: x[var_target].std("time"),
     )
 
     # Mean Absolute Error
-    mae = np.abs(pred_ds[cf.data.var_target] - true_ds[cf.data.var_target]).mean("time")
+    mae = np.abs(pred_ds[var_target] - true_ds[var_target]).mean("time")
 
     # Pearson correlation
     correlation = xr.corr(
-        pred_ds[cf.data.var_target],
-        true_ds[cf.data.var_target],
+        pred_ds[var_target],
+        true_ds[var_target],
         dim="time",
     )
 
     spatial_dims = norm_params["spatial_dims"]
     # Anomaly correlation (after removing climatology)
-    pred_anomaly = pred_ds[cf.data.var_target] - pred_ds[cf.data.var_target].mean(
-        "time"
-    )
-    true_anomaly = true_ds[cf.data.var_target] - true_ds[cf.data.var_target].mean(
-        "time"
-    )
+    pred_anomaly = pred_ds[var_target] - pred_ds[var_target].mean("time")
+    true_anomaly = true_ds[var_target] - true_ds[var_target].mean("time")
     anomaly_correlation = xr.corr(pred_anomaly, true_anomaly, dim=spatial_dims)
+
+    # Power Spectral Density and distance metric
+    psd_true, psd_pred = diagnostics.psd(x0=true_ds, x1=pred_ds, var=var_target)
+
+    # Compute PSD distance (RMSE in log space)
+    wavenumber_min = 1
+    wavenumber_max = min(60, len(psd_true) - 1)
+    wavenumber = psd_true["wavenumber"].values
+    mask = (wavenumber >= wavenumber_min) & (wavenumber <= wavenumber_max)
+    eps = 1e-10
+    log_psd_true = np.log10(psd_true.values[mask] + eps)
+    log_psd_pred = np.log10(psd_pred.values[mask] + eps)
+    psd_distance = float(np.sqrt(np.mean((log_psd_true - log_psd_pred) ** 2)))
 
     # Build diagnostics dictionary with spatially-averaged values
     diagnostics_dict = {
-        "rmse": rmse[cf.data.var_target].mean().values.item(),
+        "rmse": rmse[var_target].mean().values.item(),
         "bias_mean": bias_mean.mean().values.item(),
         "bias_q95": bias_q95.mean().values.item(),
         "bias_q98": bias_q98.mean().values.item(),
@@ -151,9 +176,91 @@ def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, 
         "mae": mae.mean().values.item(),
         "correlation": correlation.mean().values.item(),
         "anomaly_correlation": anomaly_correlation.mean().values.item(),
+        "psd_distance": psd_distance,
         "fss": mean_fss_test,
         "epoch": epoch,
     }
+
+    # Ensemble variability (if ensemble predictions provided)
+    if ensemble_preds_all is not None:
+        # ensemble_preds_all shape: (B, N_ensemble, H*W)
+        # Compute std along ensemble dimension, then spatial mean
+        ensemble_std = ensemble_preds_all.std(dim=1).mean().item()
+        diagnostics_dict["ensemble_std"] = float(ensemble_std)
+        logger.info(f"  Ensemble Variability (std): {ensemble_std:.4f}")
+
+    # Variable-specific climate indices
+    if var_target == "tasmax":
+        # Temperature-specific indices
+        # Summer days (days > 25°C, threshold=298.15K for data in Kelvin)
+        su_true = indices.su(true_ds, var_target, threshold=298.15)
+        su_pred = indices.su(pred_ds, var_target, threshold=298.15)
+        su_bias = (su_pred[var_target] - su_true[var_target]).mean().values.item()
+        diagnostics_dict["su_bias"] = float(su_bias)
+
+        # Mean annual maximum temperature
+        txx_true = indices.txx(true_ds, var_target)
+        txx_pred = indices.txx(pred_ds, var_target)
+        txx_bias = (txx_pred[var_target] - txx_true[var_target]).mean().values.item()
+        diagnostics_dict["txx_bias"] = float(txx_bias)
+
+        # Mean annual minimum temperature
+        txn_true = indices.txn(true_ds, var_target)
+        txn_pred = indices.txn(pred_ds, var_target)
+        txn_bias = (txn_pred[var_target] - txn_true[var_target]).mean().values.item()
+        diagnostics_dict["txn_bias"] = float(txn_bias)
+
+        logger.info(f"  Summer Days Bias: {su_bias:.4f}")
+        logger.info(f"  TXx (Annual Max) Bias: {txx_bias:.4f}")
+        logger.info(f"  TXn (Annual Min) Bias: {txn_bias:.4f}")
+
+    elif var_target == "pr":
+        # Precipitation-specific indices
+        # Maximum 1-day precipitation
+        rx1day_true = indices.rx1day(true_ds, var_target)
+        rx1day_pred = indices.rx1day(pred_ds, var_target)
+        rx1day_bias = (
+            (rx1day_pred[var_target] - rx1day_true[var_target]).mean().values.item()
+        )
+        diagnostics_dict["rx1day_bias"] = float(rx1day_bias)
+
+        # Simple precipitation intensity (mean precip on wet days)
+        sdii_true = indices.sdii(true_ds, var_target, wet_threshold=1.0)
+        sdii_pred = indices.sdii(pred_ds, var_target, wet_threshold=1.0)
+        sdii_bias = (sdii_pred[var_target] - sdii_true[var_target]).mean().values.item()
+        diagnostics_dict["sdii_bias"] = float(sdii_bias)
+
+        # Consecutive dry days
+        cdd_true = indices.cdd(true_ds, var_target, dry_threshold=1.0)
+        cdd_pred = indices.cdd(pred_ds, var_target, dry_threshold=1.0)
+        cdd_bias = (cdd_pred[var_target] - cdd_true[var_target]).mean().values.item()
+        diagnostics_dict["cdd_bias"] = float(cdd_bias)
+
+        # Consecutive wet days
+        cwd_true = indices.cwd(true_ds, var_target, wet_threshold=1.0)
+        cwd_pred = indices.cwd(pred_ds, var_target, wet_threshold=1.0)
+        cwd_bias = (cwd_pred[var_target] - cwd_true[var_target]).mean().values.item()
+        diagnostics_dict["cwd_bias"] = float(cwd_bias)
+
+        logger.info(f"  Rx1day (Max 1-day Precip) Bias: {rx1day_bias:.4f}")
+        logger.info(f"  SDII (Precip Intensity) Bias: {sdii_bias:.4f}")
+        logger.info(f"  CDD (Max Dry Spell) Bias: {cdd_bias:.4f}")
+        logger.info(f"  CWD (Max Wet Spell) Bias: {cwd_bias:.4f}")
+
+    # Universal indices (applicable to both variables)
+    # Lag-1 autocorrelation
+    lag1_true = indices.lag1_corr(true_ds, var_target)
+    lag1_pred = indices.lag1_corr(pred_ds, var_target)
+    lag1_bias = (lag1_pred[var_target] - lag1_true[var_target]).mean().values.item()
+    diagnostics_dict["lag1_corr_bias"] = float(lag1_bias)
+
+    # Interannual variability
+    interann_true = indices.interannual_var(true_ds, var_target)
+    interann_pred = indices.interannual_var(pred_ds, var_target)
+    interann_bias = (
+        (interann_pred[var_target] - interann_true[var_target]).mean().values.item()
+    )
+    diagnostics_dict["interannual_var_bias"] = float(interann_bias)
 
     # Log key diagnostics
     logger.info(f"  RMSE (spatial mean): {diagnostics_dict['rmse']:.4f}")
@@ -161,6 +268,9 @@ def compute_diagnostics(y_pred_all, y_true_all, norm_params, cf, mean_fss_test, 
     logger.info(f"  Bias Q95 (spatial mean): {diagnostics_dict['bias_q95']:.4f}")
     logger.info(f"  Std Ratio (spatial mean): {diagnostics_dict['std_ratio']:.4f}")
     logger.info(f"  Correlation (spatial mean): {diagnostics_dict['correlation']:.4f}")
+    logger.info(f"  PSD Distance (log RMSE): {diagnostics_dict['psd_distance']:.4f}")
+    logger.info(f"  Lag-1 Autocorr Bias: {lag1_bias:.4f}")
+    logger.info(f"  Interannual Var Bias: {interann_bias:.4f}")
 
     return diagnostics_dict
 
@@ -271,20 +381,24 @@ def main():
     # Loss function
     criterion = nn.BCEWithLogitsLoss()
 
-    # FSS criterion
+    # FSS criterion with variable-specific thresholds
+    var_target = cf.data.var_target
+    if var_target == "pr":
+        # Precipitation thresholds (mm/day)
+        fss_thresholds = [0.1, 0.2, 0.4, 0.8, 1.6, 2.4, 4, 6, 10, 25]
+    elif var_target in ["tasmax", "tas", "tasmin"]:
+        # Temperature thresholds (Kelvin) - relative to typical range
+        # These cover ~270K to ~310K with finer resolution in middle
+        fss_thresholds = [270, 275, 280, 285, 290, 295, 300, 305, 310]
+    else:
+        # Default fallback
+        logger.warning(
+            f"No FSS thresholds defined for variable {var_target}, using precipitation defaults"
+        )
+        fss_thresholds = [0.1, 0.2, 0.4, 0.8, 1.6, 2.4, 4, 6, 10, 25]
+
     fss_criterion = FSSLoss(
-        thresholds=[
-            0.1,
-            0.2,
-            0.4,
-            0.8,
-            1.6,
-            2.4,
-            4,
-            6,
-            10,
-            25,
-        ],  # not normalized thresholds
+        thresholds=fss_thresholds,
         scales=[2, 8, 16],
         device="cuda",
         sharpness=3.0,
@@ -331,7 +445,18 @@ def main():
         "mae": [],
         "correlation": [],
         "anomaly_correlation": [],
+        "psd_distance": [],
         "fss": [],
+        "lag1_corr_bias": [],
+        "interannual_var_bias": [],
+        # Variable-specific metrics (will be empty if not applicable)
+        "su_bias": [],
+        "txx_bias": [],
+        "txn_bias": [],
+        "rx1day_bias": [],
+        "sdii_bias": [],
+        "cdd_bias": [],
+        "cwd_bias": [],
         "epochs": [],
     }
 
@@ -353,6 +478,9 @@ def main():
         # Training phase
         epoch_gen_losses = []
         epoch_disc_losses = []
+
+        # Initialize dataloader iterator for n_critic > 1 support
+        dataloader_train_iter = iter(dataloader_train)
 
         ##################
         # Train
@@ -384,7 +512,35 @@ def main():
             else:
                 orography_batch = None
 
-            for _ in range(n_critic):
+            # Train discriminator n_critic times with DIFFERENT batches
+            for critic_step in range(n_critic):
+                # Get a fresh batch for discriminator training (prevents overfitting)
+                if critic_step > 0:
+                    try:
+                        x_batch, y_batch = next(dataloader_train_iter)
+                    except StopIteration:
+                        # If we run out of batches, reset iterator
+                        dataloader_train_iter = iter(dataloader_train)
+                        x_batch, y_batch = next(dataloader_train_iter)
+
+                    x_batch = x_batch.to(device)
+                    y_batch_2d = y_batch.to(device)
+
+                    # Recompute upsampled version for new batch
+                    if upsampler is not None:
+                        x_batch_hr = upsampler(x_batch)
+                    else:
+                        x_batch_hr = dataloader.upscale_nn(x_batch)
+
+                    timesteps = torch.zeros([x_batch.shape[0]]).to(device)
+
+                    if cf.data.use_orography:
+                        orography_batch = orography.repeat(
+                            x_batch.shape[0], 1, 1
+                        ).unsqueeze(1)
+                    else:
+                        orography_batch = None
+
                 # Train discriminator only
                 _, disc_loss = train_gan_step(
                     config=cf,
@@ -517,6 +673,15 @@ def main():
                 f"  Discriminator Loss: {train_disc_loss:.6f} (LR: {current_disc_lr:.2e})"
             )
             logger.info(f"  Test Loss (Gen Total): {test_loss:.6f}")
+            logger.info(
+                f"  Test Disc Total:    {loss_test_history['disc_total'][-1]:.6f}"
+            )
+            logger.info(
+                f"  Test Disc Real:     {loss_test_history['disc_real'][-1]:.6f}"
+            )
+            logger.info(
+                f"  Test Disc Fake:     {loss_test_history['disc_fake'][-1]:.6f}"
+            )
             if loss_test_history["l1"][-1] > 0:
                 logger.info(f"  Test L1:            {loss_test_history['l1'][-1]:.6f}")
             if loss_test_history["mse"][-1] > 0:
@@ -546,6 +711,7 @@ def main():
             # Collect all test predictions
             all_preds = []
             all_targets = []
+            all_ensemble_preds = []
 
             # to do change y to 2D
             with torch.no_grad():
@@ -561,27 +727,43 @@ def main():
                         orography_batch_diag = orography.repeat(
                             x_batch.shape[0], 1, 1
                         ).unsqueeze(1)
-                        x_batch_hr = torch.cat(
+                        x_batch_hr_with_oro = torch.cat(
                             [x_batch_hr, orography_batch_diag], dim=1
                         )
+                    else:
+                        x_batch_hr_with_oro = x_batch_hr
 
-                    x_batch_hr = dataloader.add_noise_channel(x_batch_hr)
+                    x_batch_hr_with_oro = dataloader.add_noise_channel(
+                        x_batch_hr_with_oro
+                    )
 
                     y_batch = torch.flatten(y_batch, start_dim=1)
 
                     timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                     with torch.amp.autocast("cuda"):
-                        match architecture:
-                            case "spategan":
-                                y_pred = generator(x_batch)
-                                y_pred = torch.flatten(y_pred, start_dim=1)
-                            case "diffusion_unet":
-                                y_pred = generator(x_batch_hr, timesteps)
-                                y_pred = torch.flatten(y_pred, start_dim=1)
-                            case "deepesd":
-                                y_pred = generator(x_batch)
-                                y_pred = torch.flatten(y_pred, start_dim=1)
+                        # Generate ensemble predictions for variability metric
+                        ensemble_size = getattr(cf.training, "ensemble_size", 10)
+                        gen_ensemble = _generate_ensemble(
+                            generator=generator,
+                            architecture=architecture,
+                            input_image=x_batch,
+                            input_image_hr=x_batch_hr,
+                            orography=orography_batch_diag
+                            if cf.data.use_orography
+                            else None,
+                            timesteps=timesteps,
+                            ensemble_size=ensemble_size,
+                            noise_std=cf.training.get("noise_std_gen", 0.0),
+                        )
+
+                        # Use ensemble mean as the single prediction
+                        y_pred = gen_ensemble.mean(dim=1).flatten(start_dim=1)
+
+                        # Store ensemble for variability computation (flatten spatial dims)
+                        # gen_ensemble shape: (B, N_ensemble, H, W) -> flatten to (B, N_ensemble, H*W)
+                        gen_ensemble_flat = gen_ensemble.flatten(start_dim=2)
+                        all_ensemble_preds.append(gen_ensemble_flat.cpu())
 
                     all_preds.append(y_pred.cpu())
                     all_targets.append(y_batch.cpu())
@@ -589,10 +771,19 @@ def main():
             # Concatenate all batches
             y_pred_all = torch.cat(all_preds, dim=0)
             y_true_all = torch.cat(all_targets, dim=0)
+            ensemble_preds_all = torch.cat(
+                all_ensemble_preds, dim=0
+            )  # (B, N_ensemble, H*W)
 
             # Compute diagnostics using helper function
             diag_results = compute_diagnostics(
-                y_pred_all, y_true_all, norm_params, cf, mean_fss_test, epoch + 1
+                y_pred_all,
+                y_true_all,
+                norm_params,
+                cf,
+                mean_fss_test,
+                epoch + 1,
+                ensemble_preds_all=ensemble_preds_all,
             )
 
             # Store in history
@@ -600,7 +791,17 @@ def main():
                 if key == "epoch":
                     diagnostic_history["epochs"].append(value)
                 else:
+                    # Initialize key if it doesn't exist (for variable-specific metrics)
+                    if key not in diagnostic_history:
+                        diagnostic_history[key] = []
                     diagnostic_history[key].append(value)
+
+            # Save diagnostic history to JSON file (independent of checkpoints)
+            diagnostic_history_path = os.path.join(
+                cf.logging.run_dir, "diagnostic_history.json"
+            )
+            with open(diagnostic_history_path, "w") as f:
+                json.dump(diagnostic_history, f, indent=2)
 
             plot_diagnostic_history(diagnostic_history, cf)
 

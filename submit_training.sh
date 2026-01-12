@@ -6,9 +6,11 @@
 # Configuration file (can be changed to use different configs)
 CONFIG_FILE="config.yml"
 
-# Create a unique temporary config file on the login node
+# Create a unique temporary config file in project workspace (shared across nodes)
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-TEMP_CONFIG="/tmp/config_${TIMESTAMP}_$$.yml"
+TMP_DIR="tmp_cfg/single_runs"
+mkdir -p "$TMP_DIR"
+TEMP_CONFIG="${TMP_DIR}/config_${TIMESTAMP}_$$.yml"
 
 # Copy config to temporary location (this happens on login node)
 cp $CONFIG_FILE $TEMP_CONFIG
@@ -18,13 +20,13 @@ echo "Config copied to: $TEMP_CONFIG"
 sbatch --export=ALL,TEMP_CONFIG=$TEMP_CONFIG <<'EOFSBATCH'
 #!/bin/bash
 #SBATCH --job-name=spategan_train
-#SBATCH --partition=ccgp
+##SBATCH --partition=ccgp
 ##SBATCH --partition=grace
-##SBATCH --partition=sockdolager
+#SBATCH --partition=sockdolager
 #SBATCH --time=24:00:00
 #SBATCH --exclusive
-#SBATCH --qos=nvgpu
-##SBATCH --qos=sdlgpu
+##SBATCH --qos=nvgpu
+#SBATCH --qos=sdlgpu
 #SBATCH --output=logs/slurm_%j.out
 #SBATCH --error=logs/slurm_%j.err
 

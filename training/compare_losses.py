@@ -1,24 +1,136 @@
 #!/usr/bin/env python3
 """
-Script to compare diagnostic histories across multiple training runs.
+Script to compare loss histories across multiple training runs.
+Parses training.log files to extract loss curves.
 """
 
 import argparse
+import re
 from pathlib import Path
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import torch
 import yaml
 
 
-def load_diagnostic_history(checkpoint_path):
-    """Load diagnostic history from a checkpoint file."""
+def parse_training_log(log_path):
+    """
+    Parse training.log file to extract loss histories.
+
+    Returns dict with lists for each loss type across epochs.
+    """
+    losses = {
+        "epochs": [],
+        "gen_train": [],
+        "disc_train": [],
+        "gen_total_test": [],
+        "disc_total_test": [],
+        "disc_real_test": [],
+        "disc_fake_test": [],
+        "l1_test": [],
+        "mse_test": [],
+        "gan_test": [],
+        "fss_test": [],
+    }
+
     try:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        return checkpoint.get("diagnostic_history", None)
+        with open(log_path, "r") as f:
+            current_epoch = None
+            for line in f:
+                # Match epoch line: "Epoch 1/150"
+                epoch_match = re.search(r"Epoch (\d+)/\d+", line)
+                if epoch_match:
+                    current_epoch = int(epoch_match.group(1))
+                    losses["epochs"].append(current_epoch)
+                    continue
+
+                if current_epoch is None:
+                    continue
+
+                # Match generator loss: "  Generator Loss:     0.463650 (LR: 2.08e-06)"
+                gen_match = re.search(r"Generator Loss:\s+(\d+\.\d+)", line)
+                if gen_match:
+                    losses["gen_train"].append(float(gen_match.group(1)))
+                    continue
+
+                # Match discriminator loss: "  Discriminator Loss: 1.410671 (LR: 2.00e-04)"
+                disc_match = re.search(r"Discriminator Loss:\s+(\d+\.\d+)", line)
+                if disc_match:
+                    losses["disc_train"].append(float(disc_match.group(1)))
+                    continue
+
+                # Match test loss: "  Test Loss (Gen Total): 0.390243"
+                test_total_match = re.search(
+                    r"Test Loss \(Gen Total\):\s+(\d+\.\d+)", line
+                )
+                if test_total_match:
+                    losses["gen_total_test"].append(float(test_total_match.group(1)))
+                    continue
+
+                # Match discriminator test loss: "  Test Disc Total:    1.234567"
+                disc_test_match = re.search(r"Test Disc Total:\s+(\d+\.\d+)", line)
+                if disc_test_match:
+                    losses["disc_total_test"].append(float(disc_test_match.group(1)))
+                    continue
+
+                # Match discriminator real test loss: "  Test Disc Real:     1.234567"
+                disc_real_match = re.search(r"Test Disc Real:\s+(\d+\.\d+)", line)
+                if disc_real_match:
+                    losses["disc_real_test"].append(float(disc_real_match.group(1)))
+                    continue
+
+                # Match discriminator fake test loss: "  Test Disc Fake:     1.234567"
+                disc_fake_match = re.search(r"Test Disc Fake:\s+(\d+\.\d+)", line)
+                if disc_fake_match:
+                    losses["disc_fake_test"].append(float(disc_fake_match.group(1)))
+                    continue
+
+                # Match L1 loss: "  Test L1:            0.353805"
+                l1_match = re.search(r"Test L1:\s+(\d+\.\d+)", line)
+                if l1_match:
+                    losses["l1_test"].append(float(l1_match.group(1)))
+                    continue
+
+                # Match MSE loss: "  Test MSE:           0.213260"
+                mse_match = re.search(r"Test MSE:\s+(\d+\.\d+)", line)
+                if mse_match:
+                    losses["mse_test"].append(float(mse_match.group(1)))
+                    continue
+
+                # Match GAN loss: "  Test GAN:           0.799941"
+                gan_match = re.search(r"Test GAN:\s+(\d+\.\d+)", line)
+                if gan_match:
+                    losses["gan_test"].append(float(gan_match.group(1)))
+                    continue
+
+                # Match FSS loss: "  Test FSS:           0.123456"
+                fss_match = re.search(r"Test FSS:\s+(\d+\.\d+)", line)
+                if fss_match:
+                    losses["fss_test"].append(float(fss_match.group(1)))
+                    continue
+
+        # Validate that we have matching lengths
+        n_epochs = len(losses["epochs"])
+        for key in [
+            "gen_train",
+            "disc_train",
+            "gen_total_test",
+            "disc_total_test",
+            "disc_real_test",
+            "disc_fake_test",
+            "l1_test",
+            "mse_test",
+            "gan_test",
+        ]:
+            if len(losses[key]) != n_epochs:
+                print(
+                    f"Warning: Mismatch in {key} length ({len(losses[key])}) vs epochs ({n_epochs})"
+                )
+
+        return losses
+
     except Exception as e:
-        print(f"Error loading {checkpoint_path}: {e}")
+        print(f"Error parsing {log_path}: {e}")
         return None
 
 
@@ -36,172 +148,127 @@ def load_run_config(run_dir):
 
 def get_run_label(run_dir):
     """Generate a label for a run based on its directory name."""
-    run_id = run_dir.name
-    return run_id
+    return run_dir.name
 
 
-def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png"):
+def plot_loss_comparison(runs_data, output_path="loss_comparison.png"):
     """
-    Plot diagnostic metrics comparison across multiple runs.
+    Plot loss comparison across multiple runs.
 
     Parameters
     ----------
     runs_data : list of dict
-        List of dictionaries with keys 'label', 'history', 'color', 'config'
+        List of dictionaries with keys 'label', 'losses', 'color', 'marker', 'linestyle', 'config'
     output_path : str
         Path to save the output figure
     """
-    # Define metrics to plot - base metrics common to all variables
-    base_metrics = [
-        ("rmse", "RMSE (spatial mean)", None, 0, 12),
-        ("mae", "MAE (spatial mean)", None, 0, 5),
-        ("bias_mean", "Bias Mean (spatial mean)", 0, -0.5, 0.5),
-        ("bias_q95", "Bias Q95 (spatial mean)", 0, -0.5, 0.5),
-        ("bias_q98", "Bias Q98 (spatial mean)", 0, -0.5, 0.5),
-        ("std_ratio", "Std Ratio (spatial mean)", 1, 0.5, 1.5),
-        ("correlation", "Correlation (spatial mean)", None, 0.4, None),
-        ("anomaly_correlation", "Anomaly Correlation (spatial mean)", None, 0.3, None),
-        ("psd_distance", "PSD Distance (log RMSE)", None, 0, None),
-        ("fss", "FSS (Fractions Skill Score)", None, 0, None),
-        ("ensemble_std", "Ensemble Variability (std)", None, 0, None),
-        ("lag1_corr_bias", "Lag-1 Autocorr Bias", 0, -0.2, 0.2),
-        ("interannual_var_bias", "Interannual Var Bias", 0, None, None),
-    ]
-
-    # Variable-specific metrics - will try to plot these if available
-    var_specific_metrics = {
-        "tasmax": [
-            ("su_bias", "Summer Days Bias", 0, None, None),
-            ("txx_bias", "TXx (Annual Max) Bias", 0, None, None),
-            ("txn_bias", "TXn (Annual Min) Bias", 0, None, None),
-        ],
-        "pr": [
-            ("rx1day_bias", "Rx1day Bias", 0, None, None),
-            ("sdii_bias", "SDII Bias", 0, None, None),
-            ("cdd_bias", "CDD (Dry Spell) Bias", 0, None, None),
-            ("cwd_bias", "CWD (Wet Spell) Bias", 0, None, None),
-        ],
-    }
-
-    # Determine which variable we're working with from first run
-    var_target = None
-    if runs_data:
-        first_config = runs_data[0].get("config", {})
-        var_target = first_config.get("data", {}).get("var_target")
-
-    # Build final metrics list
-    metrics = base_metrics.copy()
-
-    # Check if any runs have variable-specific metrics in their history
-    if var_target and var_target in var_specific_metrics:
-        var_metrics = var_specific_metrics[var_target]
-        # Only add metrics that exist in at least one run's history
-        for metric_key, metric_label, hline, vmin, vmax in var_metrics:
-            has_metric = any(
-                metric_key in run_data.get("history", {}) for run_data in runs_data
-            )
-            if has_metric:
-                metrics.append((metric_key, metric_label, hline, vmin, vmax))
-
-    # Determine grid size dynamically based on number of metrics
-    n_metrics = len(metrics)
-    n_cols = 3  # Fixed at 3 columns
-    n_rows = (n_metrics + n_cols - 1) // n_cols  # Ceiling division
-
     # Create figure with space for table at bottom
-    fig = plt.figure(figsize=(18, 4 * n_rows + 4))
+    fig = plt.figure(figsize=(18, 14))
 
-    # Create gridspec: n_rows for plots, 1 row for table at bottom
-    gs = fig.add_gridspec(
-        n_rows + 1, n_cols, height_ratios=[1] * n_rows + [0.4], hspace=0.3, wspace=0.3
-    )
+    # Create gridspec: 9 plots in 3x3 grid (top), 1 table (bottom)
+    gs = fig.add_gridspec(4, 3, height_ratios=[1, 1, 1, 0.4], hspace=0.35, wspace=0.3)
 
     # Create subplots for metrics
     axes = []
-    for i in range(n_rows):
-        for j in range(n_cols):
+    for i in range(3):
+        for j in range(3):
             axes.append(fig.add_subplot(gs[i, j]))
 
+    # Define loss metrics to plot
+    loss_metrics = [
+        ("gen_train", "Generator Training Loss", None, None),
+        ("disc_train", "Discriminator Training Loss", None, None),
+        ("gen_total_test", "Generator Test Loss (Total)", None, None),
+        ("disc_total_test", "Discriminator Test Loss (Total)", None, None),
+        ("disc_real_test", "Discriminator Test Loss (Real)", None, None),
+        ("disc_fake_test", "Discriminator Test Loss (Fake)", None, None),
+        ("l1_test", "L1 Test Loss", None, None),
+        ("mse_test", "MSE Test Loss", None, None),
+        ("gan_test", "GAN Test Loss", None, None),
+    ]
+
+    # Collect all losses from training.log for each run
+    for run_data in runs_data:
+        run_dir = Path(run_data["run_dir"])
+        log_path = run_dir / "training.log"
+
+        if not log_path.exists():
+            print(f"Warning: No training.log found in {run_dir}, skipping")
+            run_data["losses"] = {}
+            continue
+
+        # Parse log file
+        losses = parse_training_log(log_path)
+        if losses:
+            run_data["losses"] = losses
+        else:
+            print(f"Warning: Could not parse losses from {log_path}")
+            run_data["losses"] = {}
+
     # Plot each metric
-    for idx, (key, ylabel, hline, preset_vmin, preset_vmax) in enumerate(metrics):
+    for idx, (key, ylabel, preset_vmin, preset_vmax) in enumerate(loss_metrics):
         ax = axes[idx]
         has_data = False
         all_values = []
 
-        # Plot each run and collect values
+        # Plot each run
         for run_data in runs_data:
-            history = run_data["history"]
+            losses = run_data.get("losses", {})
             label = run_data["label"]
             color = run_data["color"]
             marker = run_data.get("marker", "o")
             linestyle = run_data.get("linestyle", "-")
 
-            if key in history and len(history[key]) > 0:
-                epochs = history.get("epochs", list(range(1, len(history[key]) + 1)))
-                values = history[key]
-                all_values.extend(values)
-                ax.plot(
-                    epochs,
-                    values,
-                    marker=marker,
-                    linestyle=linestyle,
-                    linewidth=0.3,
-                    markersize=0.75,
-                    color=color,
-                    label=label,
-                    alpha=0.85,
-                )
-                has_data = True
+            if (
+                key in losses
+                and len(losses[key]) > 0
+                and "epochs" in losses
+                and len(losses["epochs"]) > 0
+            ):
+                epochs = losses["epochs"]
+                values = losses[key]
 
-        if has_data:
-            # Compute actual data range
+                # Filter out zero or negative values for better visualization
+                if all(v > 0 for v in values):
+                    all_values.extend(values)
+                    ax.plot(
+                        epochs,
+                        values,
+                        marker=marker,
+                        linestyle=linestyle,
+                        linewidth=0.4,
+                        markersize=1.0,
+                        color=color,
+                        label=label,
+                        alpha=0.85,
+                    )
+                    has_data = True
+
+        if has_data and all_values:
+            # Set limits
             actual_min = min(all_values)
             actual_max = max(all_values)
 
-            # Determine final limits
-            if hline == 0:
-                # For plots centered at 0, use symmetrical limits
-                max_abs = max(abs(actual_min), abs(actual_max))
-                if preset_vmax is not None:
-                    max_abs = min(max_abs, preset_vmax)
-                if preset_vmin is not None:
-                    max_abs = min(max_abs, abs(preset_vmin))
-                vmin, vmax = -max_abs, max_abs
-            else:
-                # Use preset limits but constrain to actual data range
-                vmin = (
-                    max(preset_vmin, actual_min)
-                    if preset_vmin is not None
-                    else actual_min
-                )
-                vmax = (
-                    min(preset_vmax, actual_max)
-                    if preset_vmax is not None
-                    else actual_max
-                )
+            vmin = preset_vmin if preset_vmin is not None else actual_min * 0.9
+            vmax = preset_vmax if preset_vmax is not None else actual_max * 1.1
 
             ax.set_ylim(bottom=vmin, top=vmax)
             ax.set_xlabel("Epoch", fontsize=11)
             ax.set_ylabel(ylabel, fontsize=11)
-            ax.set_title(f"{ylabel} Comparison", fontsize=12, fontweight="bold")
-            # 20 yticks
-            ax.yaxis.set_major_locator(plt.MaxNLocator(nbins=20))
-            ax.tick_params(axis="both", which="major", labelsize=8)
+            ax.set_title(f"{ylabel}", fontsize=12, fontweight="bold")
+            ax.yaxis.set_major_locator(plt.MaxNLocator(nbins=10))
+            ax.tick_params(axis="both", which="major", labelsize=9)
             ax.grid(True, alpha=0.3)
-            # ax.legend(fontsize=8, loc="best")
-
-            # Add horizontal reference line if specified
-            if hline is not None:
-                ax.axhline(y=hline, color="k", linestyle="--", alpha=0.3, linewidth=1)
+            ax.set_yscale("log")  # Log scale often better for losses
         else:
             ax.axis("off")
 
-    # Hide any unused subplots
-    for idx in range(len(metrics), len(axes)):
+    # Hide remaining empty subplots if we have fewer than 9 metrics
+    for idx in range(len(loss_metrics), 9):
         axes[idx].axis("off")
 
-    # Create configuration table at the bottom (last row spans all columns)
-    ax_table = fig.add_subplot(gs[n_rows, :])
+    # Create configuration table at the bottom
+    ax_table = fig.add_subplot(gs[3, :])
     ax_table.axis("off")
 
     # Extract key settings from configs
@@ -247,7 +314,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
             "Run ID",
             "Domain",
             "Var",
-            "Exp",
             "Arch",
             "L1",
             "MSE",
@@ -259,7 +325,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
             "Run ID",
             "Domain",
             "Var",
-            "Exp",
             "Arch",
             "GAN λ",
             "GP",
@@ -273,7 +338,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
             "Run ID",
             "Domain",
             "Variable",
-            "Experiment",
             "Architecture",
             "Oro",
             "GAN λ",
@@ -289,21 +353,15 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
             run_id = run_data["label"][:22]  # Truncate for space
             domain = data_cfg.get("domain", "?")[:5]
             var_target = data_cfg.get("var_target", "?")[:6]
-            experiment = data_cfg.get("training_experiment", "?")[:15]
             architecture = model_cfg.get("architecture", "?")[:15]
             use_oro = "✓" if data_cfg.get("use_orography", False) else "✗"
-            gan_weight = (
-                f"{training_cfg.get('loss_weights', None).get('gan', None):.1e}"
-                if training_cfg.get("loss_weights") is not None
-                else "?"
-            )
+            gan_weight = f"{training_cfg.get('loss_weights', {}).get('gan', 0):.1e}"
 
             # Get marker symbol for this run
             marker = run_data.get("marker", "o")
 
             if sweep_type == "loss_weights":
                 # Shorter labels for sweep comparison
-                experiment = data_cfg.get("training_experiment", "?")[:6]
                 architecture = model_cfg.get("architecture", "?")[:8]
 
                 # Get sweep parameters
@@ -344,7 +402,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
                         run_id,
                         domain,
                         var_target,
-                        experiment,
                         architecture,
                         l1_str,
                         mse_str,
@@ -352,8 +409,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
                     ]
                 )
             elif sweep_type == "discriminator":
-                # Shorter labels for sweep comparison
-                experiment = data_cfg.get("training_experiment", "?")[:6]
                 architecture = model_cfg.get("architecture", "?")[:8]
 
                 # Get sweep parameters (new ablation study format)
@@ -406,7 +461,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
                         run_id,
                         domain,
                         var_target,
-                        experiment,
                         architecture,
                         gan_weight,
                         gp_weight,
@@ -422,7 +476,6 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
                         run_id,
                         domain,
                         var_target,
-                        experiment,
                         architecture,
                         use_oro,
                         gan_weight,
@@ -439,36 +492,14 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
             cell_colors.append([rgba] * len(header))
 
         if sweep_type == "loss_weights":
-            # M, Run ID, Domain, Var, Exp, Arch, L1, MSE, GAN (9 columns)
-            col_widths = [
-                0.03,
-                0.14,
-                0.05,
-                0.05,
-                0.05,
-                0.07,
-                0.05,
-                0.05,
-                0.05,
-            ]
+            # M, Run ID, Domain, Var, Arch, L1, MSE, GAN (8 columns)
+            col_widths = [0.03, 0.16, 0.07, 0.06, 0.09, 0.06, 0.06, 0.06]
         elif sweep_type == "discriminator":
-            # M, Run ID, Domain, Var, Exp, Arch, GAN λ, GP, LR_in, SpecN, n_crit (11 columns)
-            col_widths = [
-                0.03,
-                0.14,
-                0.05,
-                0.05,
-                0.05,
-                0.07,
-                0.05,
-                0.05,
-                0.05,
-                0.05,
-                0.05,
-            ]
+            # M, Run ID, Domain, Var, Arch, GAN λ, GP, LR_in, SpecN, n_crit (10 columns)
+            col_widths = [0.03, 0.16, 0.07, 0.06, 0.09, 0.06, 0.06, 0.06, 0.06, 0.05]
         else:
-            # M, Run ID, Domain, Variable, Experiment, Architecture, Oro, GAN λ (8 columns)
-            col_widths = [0.03, 0.13, 0.08, 0.08, 0.13, 0.13, 0.04, 0.08]
+            # M, Run ID, Domain, Variable, Architecture, Oro, GAN λ (7 columns)
+            col_widths = [0.03, 0.18, 0.10, 0.11, 0.16, 0.05, 0.10]
 
         table = ax_table.table(
             cellText=table_data,
@@ -499,33 +530,31 @@ def plot_diagnostic_comparison(runs_data, output_path="diagnostic_comparison.png
             table[(0, i)].set_facecolor("#cccccc")
             table[(0, i)].set_text_props(weight="bold")
 
-        # For very large numbers of runs, add alternating row colors for readability
+        # For very large numbers of runs, add alternating row colors
         if num_runs > 20:
             for row in range(1, num_runs + 1):
                 if row % 2 == 0:
                     for col in range(len(header)):
                         current_color = table[(row, col)].get_facecolor()
-                        # Slightly darken alternating rows
                         darker = tuple(max(0, c * 0.9) for c in current_color[:3]) + (
                             current_color[3],
                         )
                         table[(row, col)].set_facecolor(darker)
 
     plt.suptitle(
-        "Diagnostic Metrics Comparison Across Runs",
+        "Training Loss Comparison Across Runs",
         fontsize=16,
         fontweight="bold",
         y=0.995,
     )
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"Comparison plot saved to {output_path}")
-    plt.show()
+    print(f"Loss comparison plot saved to {output_path}")
     plt.close()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare diagnostic histories across multiple training runs"
+        description="Compare loss histories across multiple training runs"
     )
     parser.add_argument(
         "run_dirs",
@@ -536,14 +565,8 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="diagnostic_comparison.png",
-        help="Output file path (default: diagnostic_comparison.png)",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default="final_models.pt",
-        help="Checkpoint filename to load (default: final_models.pt)",
+        default="loss_comparison.png",
+        help="Output file path (default: loss_comparison.png)",
     )
     parser.add_argument(
         "--sweep-params",
@@ -594,42 +617,15 @@ def main():
             print(f"Warning: {run_dir} does not exist, skipping")
             continue
 
-        # Try to load checkpoint
-        checkpoint_path = run_dir / "checkpoints" / args.checkpoint
-
-        if not checkpoint_path.exists():
-            # Try to find the latest checkpoint_epoch_XX.pt
-            checkpoints_dir = run_dir / "checkpoints"
-            if checkpoints_dir.exists():
-                checkpoints = list(checkpoints_dir.glob("checkpoint_epoch_*.pt"))
-                if checkpoints:
-                    # Sort by epoch number and get the highest
-                    epochs_and_paths = [
-                        (int(cp.stem.split("_")[-1]), cp) for cp in checkpoints
-                    ]
-                    epochs_and_paths.sort(reverse=True)
-                    checkpoint_path = epochs_and_paths[0][1]
-                    print(
-                        f"Using checkpoint: {checkpoint_path.name} for {run_dir.name}"
-                    )
-                else:
-                    print(f"Warning: No checkpoints found in {run_dir}, skipping")
-                    continue
-            else:
-                print(f"Warning: No checkpoints directory in {run_dir}, skipping")
-                continue
-
-        # Load diagnostic history
-        history = load_diagnostic_history(checkpoint_path)
-
-        if history is None:
-            print(f"Warning: No diagnostic history in {checkpoint_path}, skipping")
+        log_path = run_dir / "training.log"
+        if not log_path.exists():
+            print(f"Warning: No training.log in {run_dir}, skipping")
             continue
 
         # Load run configuration
         config = load_run_config(run_dir)
 
-        # Get run label and color
+        # Get run label and visual properties
         label = get_run_label(run_dir)
         color = colors[i % len(colors)]
         # Markers cycle independently: change marker after each full color cycle
@@ -639,7 +635,8 @@ def main():
 
         run_info = {
             "label": label,
-            "history": history,
+            "run_dir": str(run_dir),
+            "losses": {},
             "color": color,
             "marker": marker,
             "linestyle": linestyle,
@@ -689,7 +686,7 @@ def main():
         return
 
     # Generate comparison plot
-    plot_diagnostic_comparison(runs_data, output_path=args.output)
+    plot_loss_comparison(runs_data, output_path=args.output)
 
 
 if __name__ == "__main__":

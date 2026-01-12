@@ -44,6 +44,8 @@ def extract_key_params(config):
     params["batches_per_epoch"] = training.get("batches_per_epoch", "N/A")
     params["ensemble_size"] = training.get("ensemble_size", "N/A")
     params["n_critic"] = training.get("n_critic", "N/A")
+    params["gradient_penalty_weight"] = training.get("gradient_penalty_weight", "N/A")
+    params["noise_std_gen"] = training.get("noise_std_gen", "N/A")
 
     # Learning rate scheduler parameters
     params["warmup_epochs"] = training.get("warmup_epochs", "N/A")
@@ -62,6 +64,13 @@ def extract_key_params(config):
     params["disc_lr"] = disc.get("learning_rate", "N/A")
     params["disc_optimizer"] = disc.get("optimizer", "N/A")
     params["disc_weight_decay"] = disc.get("weight_decay", "N/A")
+    params["disc_noise_std"] = disc.get("noise_std", "N/A")
+
+    # Discriminator architecture settings
+    disc_model = model.get("discriminator", {})
+    params["use_lr_path"] = disc_model.get("use_lr_path", "N/A")
+    params["spectral_norm"] = disc_model.get("spectral_norm", "N/A")
+    params["disc_dropout"] = disc_model.get("dropout", "N/A")
 
     # Loss weights
     loss_weights = training.get("loss_weights", {})
@@ -262,6 +271,8 @@ def generate_markdown_table(runs, show_all=False):
         "batches_per_epoch",
         "ensemble_size",
         "n_critic",
+        "gradient_penalty_weight",
+        "noise_std_gen",
         "early_stopping",
         "patience",
     ]
@@ -278,6 +289,10 @@ def generate_markdown_table(runs, show_all=False):
         "disc_lr",
         "disc_optimizer",
         "disc_weight_decay",
+        "disc_noise_std",
+        "use_lr_path",
+        "spectral_norm",
+        "disc_dropout",
     ]
     loss_params = ["loss_l1", "loss_mse", "loss_gan", "loss_fss", "fss_loss"]
     data_params = [
@@ -323,6 +338,8 @@ def generate_markdown_table(runs, show_all=False):
         "batches_per_epoch": "Batches/Epoch",
         "ensemble_size": "Ensemble Size",
         "n_critic": "n_critic",
+        "gradient_penalty_weight": "GP Weight",
+        "noise_std_gen": "Gen Noise",
         "warmup_epochs": "Warmup",
         "plateau_epochs": "Plateau",
         "transition_epochs": "Transition",
@@ -333,6 +350,10 @@ def generate_markdown_table(runs, show_all=False):
         "disc_lr": "Disc LR",
         "disc_optimizer": "Disc Opt",
         "disc_weight_decay": "Disc WD",
+        "disc_noise_std": "Disc Noise",
+        "use_lr_path": "LR Path",
+        "spectral_norm": "Spec Norm",
+        "disc_dropout": "Disc Dropout",
         "loss_l1": "L1",
         "loss_mse": "MSE",
         "loss_gan": "GAN",

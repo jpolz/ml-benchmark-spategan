@@ -105,63 +105,121 @@ def plot_diagnostic_history(diagnostic_history, cf):
     """
     Plot diagnostic metrics evolution over training epochs.
 
+    Dynamically displays all available metrics in the diagnostic history,
+    including variable-specific climate indices.
+
     Parameters
     ----------
     diagnostic_history : dict
-        Dictionary containing diagnostic metrics with keys:
-        - 'epochs': list of epoch numbers
-        - 'rmse': list of RMSE values
-        - 'bias_mean': list of bias mean values
-        - 'bias_q95': list of 95th percentile bias values
-        - 'bias_q98': list of 98th percentile bias values
-        - 'std_ratio': list of standard deviation ratio values
-        - 'mae': list of MAE values
-        - 'correlation': list of correlation values
-        - 'anomaly_correlation': list of anomaly correlation values
+        Dictionary containing diagnostic metrics with 'epochs' key and
+        various metric keys (rmse, mae, bias_mean, psd_distance, fss, etc.)
     cf : Config
         Configuration object with logging settings
     """
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
-    axes = axes.flatten()
+    epochs = diagnostic_history.get("epochs", [])
+    if not epochs:
+        return
 
-    epochs = diagnostic_history["epochs"]
+    # Define metric display properties (metric_key, display_label, color, reference_line)
+    metric_definitions = {
+        "rmse": ("RMSE (spatial mean)", "tab:blue", None),
+        "mae": ("MAE (spatial mean)", "tab:orange", None),
+        "bias_mean": ("Bias Mean (spatial mean)", "tab:green", 0),
+        "bias_q95": ("Bias Q95 (spatial mean)", "tab:red", 0),
+        "bias_q98": ("Bias Q98 (spatial mean)", "tab:purple", 0),
+        "std_ratio": ("Std Ratio (spatial mean)", "tab:brown", 1),
+        "correlation": ("Correlation (spatial mean)", "tab:pink", None),
+        "anomaly_correlation": ("Anomaly Correlation (spatial mean)", "tab:gray", None),
+        "psd_distance": ("PSD Distance (log RMSE)", "tab:olive", None),
+        "fss": ("FSS (Fractions Skill Score)", "tab:cyan", None),
+        "ensemble_std": ("Ensemble Variability (std)", "tab:brown", None),
+        "lag1_corr_bias": ("Lag-1 Autocorr Bias", "tab:blue", 0),
+        "interannual_var_bias": ("Interannual Var Bias", "tab:orange", 0),
+        # Temperature-specific
+        "su_bias": ("Summer Days Bias", "tab:red", 0),
+        "txx_bias": ("TXx (Annual Max) Bias", "tab:brown", 0),
+        "txn_bias": ("TXn (Annual Min) Bias", "tab:purple", 0),
+        # Precipitation-specific
+        "rx1day_bias": ("Rx1day Bias", "tab:green", 0),
+        "sdii_bias": ("SDII Bias", "tab:olive", 0),
+        "cdd_bias": ("CDD (Dry Spell) Bias", "tab:cyan", 0),
+        "cwd_bias": ("CWD (Wet Spell) Bias", "tab:pink", 0),
+    }
 
-    # Define plots with their properties
-    plots = [
-        ("rmse", "RMSE (spatial mean)", "tab:blue", None),
-        ("mae", "MAE (spatial mean)", "tab:orange", None),
-        ("bias_mean", "Bias Mean (spatial mean)", "tab:green", 0),
-        ("bias_q95", "Bias Q95 (spatial mean)", "tab:red", 0),
-        ("bias_q98", "Bias Q98 (spatial mean)", "tab:purple", 0),
-        ("std_ratio", "Std Ratio (spatial mean)", "tab:brown", 1),
-        ("correlation", "Correlation (spatial mean)", "tab:pink", None),
-        ("anomaly_correlation", "Anomaly Correlation (spatial mean)", "tab:gray", None),
-        ("fss", "FSS (Fractions Skill Score)", "tab:cyan", None),
+    # Collect all available metrics (excluding 'epochs')
+    available_metrics = [
+        key
+        for key in diagnostic_history.keys()
+        if key != "epochs" and len(diagnostic_history[key]) > 0
     ]
+
+    # Build plot list with available metrics in preferred order
+    plots = []
+    colors_cycle = [
+        "tab:blue",
+        "tab:orange",
+        "tab:green",
+        "tab:red",
+        "tab:purple",
+        "tab:brown",
+        "tab:pink",
+        "tab:gray",
+        "tab:olive",
+        "tab:cyan",
+    ]
+    color_idx = 0
+
+    # First add metrics that have definitions
+    for key in metric_definitions:
+        if key in available_metrics:
+            ylabel, color, hline = metric_definitions[key]
+            plots.append((key, ylabel, color, hline))
+
+    # Then add any other metrics that aren't defined (use default styling)
+    for key in available_metrics:
+        if key not in metric_definitions:
+            ylabel = key.replace("_", " ").title()
+            color = colors_cycle[color_idx % len(colors_cycle)]
+            color_idx += 1
+            plots.append((key, ylabel, color, None))
+
+    # Determine grid size
+    n_metrics = len(plots)
+    if n_metrics == 0:
+        return
+
+    # Create grid: aim for roughly square layout
+    n_cols = min(4, n_metrics)  # Max 4 columns
+    n_rows = (n_metrics + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+    if n_rows == 1 and n_cols == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten() if n_rows > 1 or n_cols > 1 else [axes]
 
     for idx, (key, ylabel, color, hline) in enumerate(plots):
         ax = axes[idx]
-        if key in diagnostic_history and len(diagnostic_history[key]) > 0:
-            ax.plot(
-                epochs,
-                diagnostic_history[key],
-                "o-",
-                linewidth=2,
-                markersize=6,
-                color=color,
-            )
-            ax.set_xlabel("Epoch", fontsize=11)
-            ax.set_ylabel(ylabel, fontsize=11)
-            ax.set_title(f"{ylabel} Evolution", fontsize=12, fontweight="bold")
-            ax.grid(True, alpha=0.3)
+        ax.plot(
+            epochs,
+            diagnostic_history[key],
+            "o-",
+            linewidth=2,
+            markersize=6,
+            color=color,
+        )
+        ax.set_xlabel("Epoch", fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.set_title(f"{ylabel} Evolution", fontsize=12, fontweight="bold")
+        ax.grid(True, alpha=0.3)
 
-            # Add horizontal reference line if specified
-            if hline is not None:
-                ax.axhline(y=hline, color="k", linestyle="--", alpha=0.3)
-        else:
-            ax.axis("off")
+        # Add horizontal reference line if specified
+        if hline is not None:
+            ax.axhline(y=hline, color="k", linestyle="--", alpha=0.3)
 
-    # The 9th subplot will now have FSS, so no need to hide it
+    # Hide any unused subplots
+    for idx in range(n_metrics, len(axes)):
+        axes[idx].axis("off")
 
     plt.suptitle(
         "Diagnostic Metrics Evolution", fontsize=16, fontweight="bold", y=0.995

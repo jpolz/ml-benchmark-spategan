@@ -17,7 +17,11 @@ squeue -u $USER
 
 ### 3. Compare all runs after completion
 ```bash
+# Compare all sweep runs
 ./comparison_scripts/compare_disc_sweep.sh tmp_cfg/disc_sweep_*/run_manifest.txt
+
+# Compare with a baseline run
+./comparison_scripts/compare_disc_sweep.sh --baseline runs/YYYYMMDD_HHMM_xxxxxxxx tmp_cfg/disc_sweep_*/run_manifest.txt
 ```
 
 Results saved to `analysis/results/disc_sweep_comparison_<timestamp>/`
@@ -54,6 +58,19 @@ sbatch submit_comparison.sh <comparison_script.sh>
 Example:
 ```bash
 sbatch submit_comparison.sh comparison_scripts/compare_runs_SA_tasmax_hist.sh
+```
+
+### Model selection (rank runs by composite score)
+```bash
+# Compare all runs and rank (lower score = better)
+python evaluation/model_selection_score.py runs/*/diagnostic_history.json --compare
+
+# Analyze single run with breakdown
+python evaluation/model_selection_score.py runs/RUNID --verbose
+
+# Custom weights: generate template, edit, then use
+python evaluation/model_selection_score.py --save-weights-template weights.yaml
+python evaluation/model_selection_score.py runs/* --compare --weights-config weights.yaml
 ```
 
 ---

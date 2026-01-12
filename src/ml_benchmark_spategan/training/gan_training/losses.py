@@ -1,12 +1,11 @@
 """Configurable loss manager for GAN training."""
 
-from typing import Dict, List, Union, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 
 class GANLossManager:
@@ -84,11 +83,16 @@ class GANLossManager:
             losses["gan"] = gan_loss.item()
             total_loss = total_loss + self.weights["gan"] * gan_loss
 
-        # FSS loss
-        if self.use_fss and self.weights.get("fss", 0.0) > 0.0:
+        # FSS - always compute as a diagnostic metric
+        if self.fss_criterion is not None:
             fss_loss = self.fss_criterion(gen_ensemble, target)
             losses["fss"] = fss_loss.item()
-            total_loss = total_loss + self.weights["fss"] * fss_loss
+            # Only add to total loss if using FSS as a loss function
+            if self.use_fss and self.weights.get("fss", 0.0) > 0.0:
+                total_loss = total_loss + self.weights["fss"] * fss_loss
+        else:
+            # If no FSS criterion provided, set to 0
+            losses["fss"] = 0.0
 
         return total_loss, losses
 
@@ -97,14 +101,18 @@ class GANLossManager:
         disc_real_output: torch.Tensor,
         disc_fake_output: torch.Tensor,
         use_label_smoothing: bool = True,
+        gradient_penalty: Optional[torch.Tensor] = None,
+        gp_weight: float = 10.0,
     ) -> tuple[torch.Tensor, Dict[str, float]]:
         """
-        Compute discriminator loss (real + fake).
+        Compute discriminator loss (real + fake + gradient penalty).
 
         Args:
             disc_real_output: Discriminator output on real samples
             disc_fake_output: Discriminator output on fake samples
             use_label_smoothing: Whether to apply label smoothing to real labels
+            gradient_penalty: Precomputed gradient penalty (optional)
+            gp_weight: Weight for gradient penalty term
 
         Returns:
             Combined loss tensor and dictionary of loss components
@@ -129,7 +137,14 @@ class GANLossManager:
             "fake": disc_fake_loss.item(),
         }
 
+        # Add gradient penalty if provided
+        if gradient_penalty is not None:
+            gp_loss = gradient_penalty * gp_weight
+            total_loss = total_loss + gp_loss
+            losses["gp"] = gp_loss.item()
+
         return total_loss, losses
+
 
 class FSSCalculator:
     """

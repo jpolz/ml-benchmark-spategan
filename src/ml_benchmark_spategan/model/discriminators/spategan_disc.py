@@ -44,13 +44,20 @@ class ResidualBlock2D(nn.Module):
         else:
             self.shortcut = None
 
+        # Adaptive group count for GroupNorm to handle small channel counts
+        # Use min(num_groups, out_channels) to ensure divisibility
+        num_groups = min(32, out_channels) if out_channels >= 32 else out_channels
+        # Ensure num_groups divides out_channels
+        while out_channels % num_groups != 0:
+            num_groups //= 2
+
         self.layer_norm1 = (
-            nn.GroupNorm(num_channels=out_channels, num_groups=32)
+            nn.GroupNorm(num_channels=out_channels, num_groups=num_groups)
             if use_layer_norm
             else None
         )
         self.layer_norm2 = (
-            nn.GroupNorm(num_channels=out_channels, num_groups=32)
+            nn.GroupNorm(num_channels=out_channels, num_groups=num_groups)
             if use_layer_norm
             else None
         )
@@ -109,70 +116,94 @@ class Discriminator(nn.Module):
         # Get discriminator config with defaults
         disc_config = getattr(config.model, "discriminator", None)
         if disc_config is None:
-            # Default channel progression
-            self.hr_channels = [128, 128, 128, 64, 64]
-            self.lr_channels = [64, 32]
-            self.combined_channels = [64]
-            self.output_channels = [64, 1]
-            self.dropout = 0.0
-            self.use_spectral_norm = False
+            # Default channel progression - REDUCED capacity to prevent overfitting
+            self.hr_channels = [64, 64, 32]  # Was [128, 128, 128, 64, 64]
+            self.lr_channels = [32]  # Was [64, 32]
+            self.combined_channels = [32]  # Was [64]
+            self.output_channels = [32, 1]  # Was [64, 1]
+            self.dropout = 0.2  # Add dropout by default
+            self.use_spectral_norm = True  # Enable spectral norm for stability
+            self.use_lr_path = True  # Use LR input by default
         else:
-            self.hr_channels = getattr(
-                disc_config, "hr_channels", [128, 128, 128, 64, 64]
-            )
-            self.lr_channels = getattr(disc_config, "lr_channels", [64, 32])
-            self.combined_channels = getattr(disc_config, "combined_channels", [64])
-            self.output_channels = getattr(disc_config, "output_channels", [64, 1])
-            self.dropout = getattr(disc_config, "dropout", 0.0)
-            self.use_spectral_norm = getattr(disc_config, "spectral_norm", False)
+            self.hr_channels = getattr(disc_config, "hr_channels", [64, 64, 32])
+            self.lr_channels = getattr(disc_config, "lr_channels", [32])
+            self.combined_channels = getattr(disc_config, "combined_channels", [32])
+            self.output_channels = getattr(disc_config, "output_channels", [32, 1])
+            self.dropout = getattr(disc_config, "dropout", 0.2)
+            self.use_spectral_norm = getattr(disc_config, "spectral_norm", True)
+            self.use_lr_path = getattr(disc_config, "use_lr_path", True)
 
         # HIGH RESOLUTION path
         hr_layers = []
         in_ch = self.n_fine_channels
         for i, out_ch in enumerate(self.hr_channels):
-            hr_layers.append(
-                ResidualBlock2D(
-                    in_ch,
-                    out_ch,
-                    use_layer_norm=(i > 0),  # No norm on first layer
-                    stride=(1, 1) if i == 0 else (2, 2),
-                    dropout=self.dropout,
-                )
+            block = ResidualBlock2D(
+                in_ch,
+                out_ch,
+                use_layer_norm=(i > 0),  # No norm on first layer
+                stride=(1, 1) if i == 0 else (2, 2),
+                dropout=self.dropout,
             )
+            # Apply spectral norm to conv layers
+            if self.use_spectral_norm:
+                block.conv1 = nn.utils.spectral_norm(block.conv1)
+                block.conv2 = nn.utils.spectral_norm(block.conv2)
+                if block.shortcut is not None:
+                    block.shortcut = nn.utils.spectral_norm(block.shortcut)
+            hr_layers.append(block)
             in_ch = out_ch
 
         self.hr_path = nn.ModuleList(hr_layers)
 
-        # LOW RESOLUTION path
-        lr_layers = []
-        in_ch = self.n_coarse_channels
-        for i, out_ch in enumerate(self.lr_channels):
-            lr_layers.append(
-                ResidualBlock2D(
+        # LOW RESOLUTION path (optional for ablation studies)
+        if self.use_lr_path:
+            lr_layers = []
+            in_ch = self.n_coarse_channels
+            for i, out_ch in enumerate(self.lr_channels):
+                block = ResidualBlock2D(
                     in_ch,
                     out_ch,
                     use_layer_norm=(i > 0),
                     stride=(1, 1) if i == 0 else (2, 2),
                     dropout=self.dropout,
                 )
-            )
-            in_ch = out_ch
+                # Apply spectral norm to conv layers
+                if self.use_spectral_norm:
+                    block.conv1 = nn.utils.spectral_norm(block.conv1)
+                    block.conv2 = nn.utils.spectral_norm(block.conv2)
+                    if block.shortcut is not None:
+                        block.shortcut = nn.utils.spectral_norm(block.shortcut)
+                lr_layers.append(block)
+                in_ch = out_ch
 
-        self.lr_path = nn.ModuleList(lr_layers)
+            self.lr_path = nn.ModuleList(lr_layers)
+
+            # Adaptive pooling to match spatial dimensions before concatenation
+            # This ensures hr_out and lr_out have the same spatial size
+            self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))  # Will be set dynamically
+        else:
+            self.lr_path = None
+            self.adaptive_pool = None
 
         # Combined path
         combined_layers = []
-        in_ch = self.hr_channels[-1] + self.lr_channels[-1]
+        # Input channels: HR only or HR + LR depending on use_lr_path
+        in_ch = self.hr_channels[-1] + (self.lr_channels[-1] if self.use_lr_path else 0)
         for out_ch in self.combined_channels:
-            combined_layers.append(
-                ResidualBlock2D(
-                    in_ch,
-                    out_ch,
-                    use_layer_norm=True,
-                    stride=(2, 2),
-                    dropout=self.dropout,
-                )
+            block = ResidualBlock2D(
+                in_ch,
+                out_ch,
+                use_layer_norm=True,
+                stride=(2, 2),
+                dropout=self.dropout,
             )
+            # Apply spectral norm to conv layers
+            if self.use_spectral_norm:
+                block.conv1 = nn.utils.spectral_norm(block.conv1)
+                block.conv2 = nn.utils.spectral_norm(block.conv2)
+                if block.shortcut is not None:
+                    block.shortcut = nn.utils.spectral_norm(block.shortcut)
+            combined_layers.append(block)
             in_ch = out_ch
 
         self.combined_path = nn.ModuleList(combined_layers)
@@ -218,25 +249,31 @@ class Discriminator(nn.Module):
         Returns:
             Discriminator output (logits), shape (batch, 1, H', W')
         """
-        # Add small random (0-0.05) gaussian noise to discriminator input
-        sigma_x = torch.rand(x.size(0), 1, 1, 1, device=x.device) * 0.05
-        sigma_y = torch.rand(y.size(0), 1, 1, 1, device=y.device) * 0.05
-
-        x = x + torch.randn_like(x) * sigma_x
-        y = y + torch.randn_like(y) * sigma_y
-
+        # Note: Noise is now added in training loop for consistency
         # High resolution path
         hr_out = x
         for layer in self.hr_path:
             hr_out = layer(hr_out)
 
-        # Low resolution path
-        lr_out = y
-        for layer in self.lr_path:
-            lr_out = layer(lr_out)
+        # Low resolution path (optional)
+        if self.use_lr_path:
+            lr_out = y
+            for layer in self.lr_path:
+                lr_out = layer(lr_out)
 
-        # Concatenate
-        combined = torch.cat((hr_out, lr_out), dim=1)
+            # Match spatial dimensions using adaptive pooling
+            # Pool LR to match HR spatial size (in case they differ)
+            target_size = (hr_out.shape[2], hr_out.shape[3])
+            if lr_out.shape[2:] != hr_out.shape[2:]:
+                lr_out = nn.functional.interpolate(
+                    lr_out, size=target_size, mode="bilinear", align_corners=False
+                )
+
+            # Concatenate HR and LR features
+            combined = torch.cat((hr_out, lr_out), dim=1)
+        else:
+            # Use HR features only
+            combined = hr_out
 
         # Combined path
         for layer in self.combined_path:

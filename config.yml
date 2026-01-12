@@ -3,8 +3,8 @@ data:
   domain: SA # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
-  var_target: tasmax # tasmax or pr 
-  normalization: "minus1_to_plus1"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
+  var_target: pr # tasmax or pr 
+  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
@@ -15,20 +15,21 @@ training:
   batch_size: 32
   ensemble_size: 1
   noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
-  epochs: 150
+  epochs: 180
   batches_per_epoch: null  # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
-  n_critic: 2  # number of discriminator updates per generator update
+  n_critic: 0  # number of discriminator updates per generator update
+  gradient_penalty_weight: 0.0  # R1 gradient penalty weight for discriminator regularization (0.0 to disable, typical: 0.1-1.0)
   
   # Learning rate scheduler with warmup and exponential decay
   warmup_epochs: 5  # Number of epochs for linear warmup phase
-  plateau_epochs: 10  # Number of epochs to maintain target LR before decay starts
+  plateau_epochs: 30  # Number of epochs to maintain target LR before decay starts
   transition_epochs: 150  # Number of epochs over which to transition to decayed LR
   lr_decay_gamma: 0.97  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
   warmup_start_lr: 1.0e-7  # Starting learning rate for warmup phase
   
   generator:
-    learning_rate: 0.00001
+    learning_rate: 0.0001
     optimizer: "Adam"
     scheduler: null
     beta1: 0.0
@@ -49,7 +50,7 @@ training:
   loss_weights:
     l1: 0.5
     mse: 1.0
-    gan: 0.01
+    gan: 0.0
     fss: 0.0
 
 # Model configuration
@@ -98,20 +99,29 @@ model:
   discriminator:
     # High-resolution path channels (for target/prediction at 128x128)
     # Each entry creates one ResidualBlock2D with stride=2 (except first with stride=1)
-    hr_channels: [128, 256, 256, 256, 128]
+    # REDUCED from [128, 256, 256, 256, 128] to prevent overfitting
+    # 3 blocks: 128 -> 128 (s=1) -> 64 (s=2) -> 32 (s=2) = 32x32 output
+    hr_channels: [64, 64, 32]
     # Low-resolution path channels (for coarse input at 16x16)
     # Each entry creates one ResidualBlock2D with stride=2 (except first with stride=1)
-    lr_channels: [128, 128]
+    # REDUCED from [128, 128] to prevent overfitting
+    # Must match HR path spatial dims: 16 -> 16 (s=1) -> 32 (s=2 UPSAMPLE) = 32x32 output
+    # Using negative stride to indicate upsample is not supported, so we need 1 block: 16 -> 16
+    lr_channels: [32]
+    # Use LR path (coarse input)? Set to false for ablation baseline (HR only)
+    use_lr_path: false
     # Combined path channels after concatenating hr and lr features
     # Each entry creates one ResidualBlock2D with stride=2
-    combined_channels: [256]
+    # REDUCED from [256] to prevent overfitting
+    combined_channels: [32]
     # Output head channels (final should be 1 for binary classification)
     # Creates Conv2d layers with LeakyReLU between (except last layer)
-    output_channels: [64, 1]
+    # REDUCED from [64, 1] to prevent overfitting
+    output_channels: [32, 1]
     # Dropout rate for regularization (0.0 to disable)
-    dropout: 0.3
+    dropout: 0.2
     # Enable spectral normalization for stability
-    spectral_norm: true
+    spectral_norm: false
 
 # Evaluation configuration
 evaluation:
@@ -124,6 +134,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 75 # number of epochs between checkpoints
+  checkpoint_frequency: 180 # number of epochs between checkpoints
   map_frequency: 20 # number of epochs between plotting maps
-  diagnostic_frequency: 5 # number of epochs between computing diagnostics
+  diagnostic_frequency: 3 # number of epochs between computing diagnostics
