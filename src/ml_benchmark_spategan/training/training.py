@@ -40,6 +40,7 @@ The module saves:
 import argparse
 import json
 import logging
+import math
 import os
 import pathlib
 
@@ -79,6 +80,37 @@ sys.path.insert(
 )
 import diagnostics
 import indices
+
+
+def sinusoidal_encoding_doy(doy: torch.Tensor, normalize: bool = True) -> torch.Tensor:
+    """
+    Apply sinusoidal encoding to day of year values.
+
+    For models that expect values between 0 and 1, this creates a smooth
+    cyclic representation where day 1 and day 365/366 are close together.
+
+    This is used when cf.data.use_doy is True to replace the zero timestep
+    with seasonal conditioning information.
+
+    Args:
+        doy: Day of year tensor (values 1-366)
+        normalize: If True, normalize to [0, 1] range. If False, keep raw encoding.
+
+    Returns:
+        Encoded day of year tensor
+    """
+    # Convert to angle (0 to 2*pi)
+    angle = (doy - 1) / 365.25 * 2 * math.pi
+
+    if normalize:
+        # Use sine encoding normalized to [0, 1]
+        # sin ranges from [-1, 1], so (sin + 1) / 2 gives [0, 1]
+        encoded = (torch.sin(angle) + 1.0) / 2.0
+    else:
+        # Use raw sine encoding [-1, 1]
+        encoded = torch.sin(angle)
+
+    return encoded
 
 
 def compute_diagnostics(
@@ -486,9 +518,17 @@ def main():
         # Train
         ##################
 
-        for batch_idx, (x_batch, y_batch) in tqdm(
+        for batch_idx, batch_data in tqdm(
             enumerate(dataloader_train), total=len(dataloader_train)
         ):
+            # Unpack batch data (may include doy)
+            if len(batch_data) == 3:
+                x_batch, y_batch, doy_batch = batch_data
+                doy_batch = doy_batch.to(device)
+            else:
+                x_batch, y_batch = batch_data
+                doy_batch = None
+
             x_batch = x_batch.to(device)
             if upsampler is not None:
                 x_batch_hr = upsampler(x_batch)
@@ -497,10 +537,12 @@ def main():
             # during training, noise channel is added during train step
             y_batch_2d = y_batch.to(device)
 
-            # zero timestep, for diffusion UNET.
-            timesteps = torch.zeros([x_batch.shape[0]]).to(
-                device
-            )  # only for diffusion unet
+            # Use day of year as timestep for diffusion UNET (with sinusoidal encoding)
+            if doy_batch is not None:
+                timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
+            else:
+                # Fallback to zero timestep if no doy available
+                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
             # Train discriminator n_critic times
             n_critic = getattr(cf.training, "n_critic", 1)
@@ -517,11 +559,23 @@ def main():
                 # Get a fresh batch for discriminator training (prevents overfitting)
                 if critic_step > 0:
                     try:
-                        x_batch, y_batch = next(dataloader_train_iter)
+                        batch_data = next(dataloader_train_iter)
+                        if len(batch_data) == 3:
+                            x_batch, y_batch, doy_batch = batch_data
+                            doy_batch = doy_batch.to(device)
+                        else:
+                            x_batch, y_batch = batch_data
+                            doy_batch = None
                     except StopIteration:
                         # If we run out of batches, reset iterator
                         dataloader_train_iter = iter(dataloader_train)
-                        x_batch, y_batch = next(dataloader_train_iter)
+                        batch_data = next(dataloader_train_iter)
+                        if len(batch_data) == 3:
+                            x_batch, y_batch, doy_batch = batch_data
+                            doy_batch = doy_batch.to(device)
+                        else:
+                            x_batch, y_batch = batch_data
+                            doy_batch = None
 
                     x_batch = x_batch.to(device)
                     y_batch_2d = y_batch.to(device)
@@ -532,7 +586,11 @@ def main():
                     else:
                         x_batch_hr = dataloader.upscale_nn(x_batch)
 
-                    timesteps = torch.zeros([x_batch.shape[0]]).to(device)
+                    # Use day of year as timestep for diffusion UNET
+                    if doy_batch is not None:
+                        timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
+                    else:
+                        timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                     if cf.data.use_orography:
                         orography_batch = orography.repeat(
@@ -601,8 +659,31 @@ def main():
 
         batch_loss_dicts = []
 
-        for batch_idx, (x_batch, y_batch) in enumerate(test_dataloader):
+        for batch_idx, batch_data in enumerate(test_dataloader):
             if batch_idx >= cf.training.batches_per_validation:
+                break
+
+            # Unpack batch data (may include doy)
+            if len(batch_data) == 3:
+                x_batch, y_batch, doy_batch = batch_data
+                doy_batch = doy_batch.to(device)
+            else:
+                x_batch, y_batch = batch_data
+                doy_batch = None
+
+            x_batch = x_batch.to(device)
+            if upsampler is not None:
+                x_batch_hr = upsampler(x_batch)
+            else:
+                x_batch_hr = dataloader.upscale_nn(x_batch)
+            y_batch = y_batch.to(device)
+            y_batch_2d = y_batch.view(-1, 1, 128, 128)
+
+            # Use day of year as timestep for diffusion UNET
+            if doy_batch is not None:
+                timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
+            else:
+                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
                 break
 
             x_batch = x_batch.to(device)
@@ -610,13 +691,15 @@ def main():
                 x_batch_hr = upsampler(x_batch)
             else:
                 x_batch_hr = dataloader.upscale_nn(x_batch)
-            # Note: test_gan_step doesn't add noise channel
-            y_batch_2d = y_batch.to(device)
+            y_batch = y_batch.to(device)
+            y_batch_2d = y_batch.view(-1, 1, 128, 128)
 
-            # zero timestep, for diffusion UNET.
-            timesteps = torch.zeros([x_batch.shape[0]]).to(device)
+            # Use day of year as timestep for diffusion UNET
+            if doy_batch is not None:
+                timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
+            else:
+                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
-            # repeat orography for each sample in batch if used
             if cf.data.use_orography:
                 orography_batch = orography.repeat(x_batch.shape[0], 1, 1).unsqueeze(1)
             else:
@@ -715,12 +798,31 @@ def main():
 
             # to do change y to 2D
             with torch.no_grad():
-                for x_batch, y_batch in test_dataloader:
+                for batch_data in test_dataloader:
+                    # Unpack batch data (may include doy)
+                    if len(batch_data) == 3:
+                        x_batch, y_batch, doy_batch = batch_data
+                        doy_batch = doy_batch.to(device)
+                    else:
+                        x_batch, y_batch = batch_data
+                        doy_batch = None
+
+                    x_batch = x_batch.to(device)
+                    if upsampler is not None:
+                        x_batch_hr = upsampler(x_batch)
                     x_batch = x_batch.to(device)
                     if upsampler is not None:
                         x_batch_hr = upsampler(x_batch)
                     else:
                         x_batch_hr = dataloader.upscale_nn(x_batch)
+                    # during training, noise channel is added during train step
+                    y_batch_2d = y_batch.to(device).view(-1, 1, 128, 128)
+
+                    # Use day of year as timestep for diffusion UNET
+                    if doy_batch is not None:
+                        timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
+                    else:
+                        timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                     # Concatenate orography if available (before adding noise)
                     if cf.data.use_orography:

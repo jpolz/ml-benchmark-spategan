@@ -9,6 +9,7 @@ data:
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
   use_orography: false  # whether to include orography as additional static input
+  use_doy: false  # whether to use day of year as timestep (replaces zero timestep with seasonal conditioning)
 
 # Training configuration
 training:

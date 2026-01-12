@@ -159,15 +159,16 @@ class EmulationTrainingDataset(Dataset):
         x_data: Input predictor data (GCM variables). Can be numpy array or torch tensor.
         y_data: Target predictand data (RCM output). Can be numpy array or torch tensor.
         orography: Static orography field. Can be numpy array or torch tensor. Optional.
+        doy: Day of year (1-366) for each sample. Can be numpy array or torch tensor. Optional.
     """
 
-    def __init__(self, x_data, y_data, orography=None):
+    def __init__(self, x_data, y_data, orography=None, doy=None):
         if not isinstance(x_data, torch.Tensor):
             x_data = torch.tensor(x_data)
         if not isinstance(y_data, torch.Tensor):
             y_data = torch.tensor(y_data)
         self.x_data, self.y_data = x_data, y_data
-        
+
         # Cache orography as internal variable
         if orography is not None:
             if not isinstance(orography, torch.Tensor):
@@ -176,11 +177,22 @@ class EmulationTrainingDataset(Dataset):
         else:
             self.orography = None
 
+        # Cache day of year as internal variable
+        if doy is not None:
+            if not isinstance(doy, torch.Tensor):
+                doy = torch.tensor(doy, dtype=torch.float32)
+            self.doy = doy
+        else:
+            self.doy = None
+
     def __len__(self):
         return len(self.x_data)
 
     def __getitem__(self, idx):
         x_sample, y_sample = self.x_data[idx, :], self.y_data[idx, :]
+        if self.doy is not None:
+            doy_sample = self.doy[idx]
+            return x_sample, y_sample, doy_sample
         return x_sample, y_sample
 
     def _get_shapes(self):
@@ -197,12 +209,16 @@ class EmulationTrainingDatasetSpate(Dataset):
     Args:
         x_data: Input predictor data (GCM variables). Can be numpy array or torch tensor.
         y_data: Target predictand data (RCM output). Can be numpy array or torch tensor.
+        times: Time values for each sample
         t_future: Number of future time steps to use as input
         t_past: Number of past time steps to use as input
         orography: Static orography field. Can be numpy array or torch tensor. Optional.
+        doy: Day of year (1-366) for each sample. Can be numpy array or torch tensor. Optional.
     """
 
-    def __init__(self, x_data, y_data, times, t_future=1, t_past=1, orography=None):
+    def __init__(
+        self, x_data, y_data, times, t_future=1, t_past=1, orography=None, doy=None
+    ):
         if not isinstance(x_data, torch.Tensor):
             x_data = torch.tensor(x_data)
         if not isinstance(y_data, torch.Tensor):
@@ -211,7 +227,7 @@ class EmulationTrainingDatasetSpate(Dataset):
         self.times = times
         self.t_future = t_future
         self.t_past = t_past
-        
+
         # Cache orography as internal variable
         if orography is not None:
             if not isinstance(orography, torch.Tensor):
@@ -220,12 +236,23 @@ class EmulationTrainingDatasetSpate(Dataset):
         else:
             self.orography = None
 
+        # Cache day of year as internal variable
+        if doy is not None:
+            if not isinstance(doy, torch.Tensor):
+                doy = torch.tensor(doy, dtype=torch.float32)
+            self.doy = doy
+        else:
+            self.doy = None
+
     def __len__(self):
         return len(self.x_data)
 
     def __getitem__(self, idx):
         if self.t_future == 0 and self.t_past == 0:
             x_sample, y_sample = self.x_data[idx, :], self.y_data[idx, :]
+            if self.doy is not None:
+                doy_sample = self.doy[idx]
+                return x_sample, y_sample, doy_sample
             return x_sample, y_sample
         else:
             # get time of index
@@ -241,6 +268,9 @@ class EmulationTrainingDatasetSpate(Dataset):
                 if len(idx_t) > 0:
                     idxs.append(idx_t[0])
             x_sample, y_sample = self.x_data[idxs, :], self.y_data[idxs, :]
+            if self.doy is not None:
+                doy_sample = self.doy[idx]
+                return x_sample, y_sample, doy_sample
             return x_sample, y_sample
 
     def _get_shapes(self):
@@ -257,13 +287,14 @@ class EmulationTestDataset(Dataset):
     Args:
         x_data: Input predictor data (GCM variables). Can be numpy array or torch tensor.
         orography: Static orography field. Can be numpy array or torch tensor. Optional.
+        doy: Day of year (1-366) for each sample. Can be numpy array or torch tensor. Optional.
     """
 
-    def __init__(self, x_data, orography=None):
+    def __init__(self, x_data, orography=None, doy=None):
         if not isinstance(x_data, torch.Tensor):
             x_data = torch.tensor(x_data)
         self.x_data = x_data
-        
+
         # Cache orography as internal variable
         if orography is not None:
             if not isinstance(orography, torch.Tensor):
@@ -272,11 +303,23 @@ class EmulationTestDataset(Dataset):
         else:
             self.orography = None
 
+        # Cache day of year as internal variable
+        if doy is not None:
+            if not isinstance(doy, torch.Tensor):
+                doy = torch.tensor(doy, dtype=torch.float32)
+            self.doy = doy
+        else:
+            self.doy = None
+
     def __len__(self):
         return len(self.x_data)
 
     def __getitem__(self, idx):
-        return self.x_data[idx, :]
+        x_sample = self.x_data[idx, :]
+        if self.doy is not None:
+            doy_sample = self.doy[idx]
+            return x_sample, doy_sample
+        return x_sample
 
     def _get_shapes(self):
         return self.x_data.shape[1:]
@@ -353,6 +396,14 @@ def build_dataloaders(cf):
     # Extract times for temporal dataset
     times_train = x_train["time"].values
 
+    # Extract day of year (1-366) from time coordinate if enabled
+    if getattr(cf.data, "use_doy", False):
+        doy_train = x_train["time"].dt.dayofyear.values
+        doy_test = x_test["time"].dt.dayofyear.values
+    else:
+        doy_train = None
+        doy_test = None
+
     # Normalize predictors and predictands
     x_train_stand, x_test_stand, y_train, y_test, norm_params_partial = (
         normalize_predictors(
@@ -400,6 +451,7 @@ def build_dataloaders(cf):
         t_future=cf.data.t_future,
         t_past=cf.data.t_past,
         orography=orography_array,
+        doy=doy_train if getattr(cf.data, "use_doy", False) else None,
     )
 
     if cf.training.batches_per_epoch is not None:
@@ -422,7 +474,10 @@ def build_dataloaders(cf):
     y_test_stack_array = y_test_stack_array.view(-1, 1, 128, 128)
 
     dataset_test = EmulationTrainingDataset(
-        x_data=x_test_stand_array, y_data=y_test_stack_array, orography=orography_array
+        x_data=x_test_stand_array,
+        y_data=y_test_stack_array,
+        orography=orography_array,
+        doy=doy_test if getattr(cf.data, "use_doy", False) else None,
     )
     test_dataloader = DataLoader(
         dataset=dataset_test,
