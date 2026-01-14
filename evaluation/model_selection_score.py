@@ -25,12 +25,12 @@ import yaml
 # Negative weights: higher is better (correlation, FSS)
 DEFAULT_WEIGHTS = {
     # Core performance metrics (high importance)
-    "rmse": 1.0,
+    "rmse": 2.0,
     "mae": 1.0,
     "bias_mean": 1.0,
     # Distribution metrics (medium-high importance)
-    "bias_q95": 1.5,
-    "bias_q98": 1.5,
+    "bias_q95": 0.1,
+    "bias_q98": 0.1,
     "std_ratio": 1.0,  # deviation from 1.0
     # Correlation metrics (high importance, negative = higher is better)
     "correlation": 1.0,
@@ -46,7 +46,7 @@ DEFAULT_WEIGHTS = {
     "su_bias": 0.1,
     "txx_bias": 0.5,
     "txn_bias": 0.5,
-    "rx1day_bias": 0.5,
+    "rx1day_bias": 0.1,
     "sdii_bias": 0.5,
     "cdd_bias": 0.5,
     "cwd_bias": 0.5,
@@ -91,6 +91,10 @@ def normalize_metric(
     # Use last epoch value (most trained)
     value = values[-1]
 
+    # Skip NaN values
+    if not isinstance(value, (int, float)) or np.isnan(value):
+        return 0.0
+
     # Metrics where ideal value is 1.0
     if metric_name in ["std_ratio", "correlation", "anomaly_correlation", "fss"]:
         value = abs(value - 1.0)
@@ -130,6 +134,10 @@ def compute_score_at_epoch(
             continue
 
         value = values[epoch_idx]
+
+        # Skip NaN values
+        if not isinstance(value, (int, float)) or np.isnan(value):
+            continue
 
         # Metrics where ideal value is 1.0
         if metric_name in ["std_ratio", "correlation", "anomaly_correlation"]:
@@ -198,6 +206,11 @@ def compute_composite_score(
 
         values = diagnostic_history[metric_name]
         if len(values) == 0:
+            continue
+
+        # Skip if last value is NaN
+        last_value = values[-1]
+        if not isinstance(last_value, (int, float)) or np.isnan(last_value):
             continue
 
         # Normalize and get last epoch value

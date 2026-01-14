@@ -382,6 +382,9 @@ def main():
     x_shape, y_shape = dataloader_train.dataset._get_shapes()
     logger.info(f"  x: {x_shape}")
     logger.info(f"  y: {y_shape}")
+    logger.info(f"  Training batches: {len(dataloader_train)}")
+    logger.info(f"  Test batches: {len(test_dataloader)}")
+    logger.info(f"  Batches per validation: {cf.training.batches_per_validation}")
 
     ##################
     # Model setup
@@ -500,7 +503,11 @@ def main():
 
     # Get a fixed batch for visualization
     val_iter = iter(test_dataloader)
-    x_vis, y_vis = next(val_iter)
+    vis_batch = next(val_iter)
+    if len(vis_batch) == 3:
+        x_vis, y_vis, doy_vis = vis_batch
+    else:
+        x_vis, y_vis = vis_batch
     x_vis, y_vis = x_vis.to(device), y_vis.to(device)
 
     if cf.data.use_orography:
@@ -659,78 +666,84 @@ def main():
 
         batch_loss_dicts = []
 
-        for batch_idx, batch_data in enumerate(test_dataloader):
-            if batch_idx >= cf.training.batches_per_validation:
-                break
+        # Only run validation if batches_per_validation is set and > 0
+        if (
+            cf.training.batches_per_validation is not None
+            and cf.training.batches_per_validation > 0
+        ):
+            batch_count = 0
+            for batch_idx, batch_data in enumerate(test_dataloader):
+                if batch_idx >= cf.training.batches_per_validation:
+                    break
 
-            # Unpack batch data (may include doy)
-            if len(batch_data) == 3:
-                x_batch, y_batch, doy_batch = batch_data
-                doy_batch = doy_batch.to(device)
-            else:
-                x_batch, y_batch = batch_data
-                doy_batch = None
+                batch_count += 1
 
-            x_batch = x_batch.to(device)
-            if upsampler is not None:
-                x_batch_hr = upsampler(x_batch)
-            else:
-                x_batch_hr = dataloader.upscale_nn(x_batch)
-            y_batch = y_batch.to(device)
-            y_batch_2d = y_batch.view(-1, 1, 128, 128)
+                # Unpack batch data (may include doy)
+                if len(batch_data) == 3:
+                    x_batch, y_batch, doy_batch = batch_data
+                    doy_batch = doy_batch.to(device)
+                else:
+                    x_batch, y_batch = batch_data
+                    doy_batch = None
 
-            # Use day of year as timestep for diffusion UNET
-            if doy_batch is not None:
-                timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
-            else:
-                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
-                break
+                x_batch = x_batch.to(device)
+                if upsampler is not None:
+                    x_batch_hr = upsampler(x_batch)
+                else:
+                    x_batch_hr = dataloader.upscale_nn(x_batch)
+                y_batch = y_batch.to(device)
+                y_batch_2d = y_batch.view(-1, 1, 128, 128)
 
-            x_batch = x_batch.to(device)
-            if upsampler is not None:
-                x_batch_hr = upsampler(x_batch)
-            else:
-                x_batch_hr = dataloader.upscale_nn(x_batch)
-            y_batch = y_batch.to(device)
-            y_batch_2d = y_batch.view(-1, 1, 128, 128)
+                # Use day of year as timestep for diffusion UNET
+                if doy_batch is not None:
+                    timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
+                else:
+                    timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
-            # Use day of year as timestep for diffusion UNET
-            if doy_batch is not None:
-                timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
-            else:
-                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
+                if cf.data.use_orography:
+                    orography_batch = orography.repeat(
+                        x_batch.shape[0], 1, 1
+                    ).unsqueeze(1)
+                else:
+                    orography_batch = None
 
-            if cf.data.use_orography:
-                orography_batch = orography.repeat(x_batch.shape[0], 1, 1).unsqueeze(1)
-            else:
-                orography_batch = None
+                # Use test_gan_step to get all loss components
+                loss_dict = test_gan_step(
+                    config=cf,
+                    input_image=x_batch,
+                    input_image_hr=x_batch_hr,
+                    orography=orography_batch,
+                    target=y_batch_2d,
+                    discriminator=discriminator,
+                    generator=generator,
+                    criterion=criterion,
+                    fss_criterion=fss_criterion,
+                    timesteps=timesteps,
+                    loss_weights=cf.training.loss_weights,
+                    condition_separate_channels=condition_separate_channels,
+                )
+                batch_loss_dicts.append(loss_dict)
 
-            # Use test_gan_step to get all loss components
-            loss_dict = test_gan_step(
-                config=cf,
-                input_image=x_batch,
-                input_image_hr=x_batch_hr,
-                orography=orography_batch,
-                target=y_batch_2d,
-                discriminator=discriminator,
-                generator=generator,
-                criterion=criterion,
-                fss_criterion=fss_criterion,
-                timesteps=timesteps,
-                loss_weights=cf.training.loss_weights,
-                condition_separate_channels=condition_separate_channels,
-            )
-            batch_loss_dicts.append(loss_dict)
+            # Log warning if no validation batches were processed
+            if batch_count == 0:
+                logger.warning(
+                    "Validation requested but test_dataloader is empty or has 0 batches!"
+                )
 
-        # Average losses across batches
-        for key in loss_test_history.keys():
-            values = [d.get(key, 0.0) for d in batch_loss_dicts]
-            epoch_mean = np.mean(values)
-            loss_test_history[key].append(epoch_mean)
+        # Average losses across batches (only if validation ran)
+        if batch_loss_dicts:
+            for key in loss_test_history.keys():
+                values = [d.get(key, 0.0) for d in batch_loss_dicts]
+                epoch_mean = np.mean(values)
+                loss_test_history[key].append(epoch_mean)
 
-        # For backward compatibility with diagnostic computation
-        test_loss = loss_test_history["gen_total"][-1]
-        mean_fss_test = loss_test_history["fss"][-1]
+            # For backward compatibility with diagnostic computation
+            test_loss = loss_test_history["gen_total"][-1]
+            mean_fss_test = loss_test_history["fss"][-1]
+        else:
+            # No validation was run this epoch
+            test_loss = None
+            mean_fss_test = None
 
         # Step learning rate schedulers
         gen_scheduler.step()
@@ -740,8 +753,8 @@ def main():
         current_gen_lr = gen_opt.param_groups[0]["lr"]
         current_disc_lr = disc_opt.param_groups[0]["lr"]
 
-        # Track best validation loss
-        if test_loss < best_val_loss:
+        # Track best validation loss (only if validation ran)
+        if test_loss is not None and test_loss < best_val_loss:
             best_val_loss = test_loss
             best_val_epoch = epoch + 1
 
@@ -755,24 +768,35 @@ def main():
             logger.info(
                 f"  Discriminator Loss: {train_disc_loss:.6f} (LR: {current_disc_lr:.2e})"
             )
-            logger.info(f"  Test Loss (Gen Total): {test_loss:.6f}")
-            logger.info(
-                f"  Test Disc Total:    {loss_test_history['disc_total'][-1]:.6f}"
-            )
-            logger.info(
-                f"  Test Disc Real:     {loss_test_history['disc_real'][-1]:.6f}"
-            )
-            logger.info(
-                f"  Test Disc Fake:     {loss_test_history['disc_fake'][-1]:.6f}"
-            )
-            if loss_test_history["l1"][-1] > 0:
-                logger.info(f"  Test L1:            {loss_test_history['l1'][-1]:.6f}")
-            if loss_test_history["mse"][-1] > 0:
-                logger.info(f"  Test MSE:           {loss_test_history['mse'][-1]:.6f}")
-            if loss_test_history["fss"][-1] > 0:
-                logger.info(f"  Test FSS:           {loss_test_history['fss'][-1]:.6f}")
-            if loss_test_history["gan"][-1] > 0:
-                logger.info(f"  Test GAN:           {loss_test_history['gan'][-1]:.6f}")
+
+            # Only log test losses if validation ran
+            if test_loss is not None:
+                logger.info(f"  Test Loss (Gen Total): {test_loss:.6f}")
+                logger.info(
+                    f"  Test Disc Total:    {loss_test_history['disc_total'][-1]:.6f}"
+                )
+                logger.info(
+                    f"  Test Disc Real:     {loss_test_history['disc_real'][-1]:.6f}"
+                )
+                logger.info(
+                    f"  Test Disc Fake:     {loss_test_history['disc_fake'][-1]:.6f}"
+                )
+                if loss_test_history["l1"][-1] > 0:
+                    logger.info(
+                        f"  Test L1:            {loss_test_history['l1'][-1]:.6f}"
+                    )
+                if loss_test_history["mse"][-1] > 0:
+                    logger.info(
+                        f"  Test MSE:           {loss_test_history['mse'][-1]:.6f}"
+                    )
+                if loss_test_history["fss"][-1] > 0:
+                    logger.info(
+                        f"  Test FSS:           {loss_test_history['fss'][-1]:.6f}"
+                    )
+                if loss_test_history["gan"][-1] > 0:
+                    logger.info(
+                        f"  Test GAN:           {loss_test_history['gan'][-1]:.6f}"
+                    )
             logger.info(
                 f"  Best Val Loss:      {best_val_loss:.6f} (epoch {best_val_epoch})"
             )
@@ -781,6 +805,29 @@ def main():
             plot_adversarial_losses(
                 loss_gen_train, loss_disc_train, loss_test_history, cf
             )
+
+            # Save loss history to JSON file
+            # Pad test history to match training history length (fill with None for epochs without validation)
+            loss_test_history_padded = {}
+            for key, values in loss_test_history.items():
+                padded_values = []
+                test_idx = 0
+                for epoch_idx in range(len(loss_gen_train)):
+                    if test_idx < len(values):
+                        padded_values.append(values[test_idx])
+                        test_idx += 1
+                    else:
+                        padded_values.append(None)
+                loss_test_history_padded[key] = padded_values
+
+            loss_history = {
+                "loss_gen_train": loss_gen_train,
+                "loss_disc_train": loss_disc_train,
+                "loss_test_history": loss_test_history_padded,
+            }
+            loss_history_path = os.path.join(cf.logging.run_dir, "loss_history.json")
+            with open(loss_history_path, "w") as f:
+                json.dump(loss_history, f, indent=2)
 
         ##################
         # Diagnostics

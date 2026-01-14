@@ -17,3 +17,7 @@ tmp_cfg/
 comparison_scripts/compare_runs_SA*
 comparison_scripts/compare_runs_AL*
 comparison_scripts/compare_runs_NZ*
+
+# Weights & Biases
+wandb/
+.wandb_synced

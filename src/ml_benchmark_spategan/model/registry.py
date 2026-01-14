@@ -32,21 +32,72 @@ def create_generator(config, device: torch.device = None):
         return generator
 
     elif architecture == "diffusion_unet":
-        from ml_benchmark_spategan.model.generators.unet2d import create_unet_generator
+        # Check if temporal dimensions are enabled
+        t_past = getattr(config.data, "t_past", 0)
+        t_future = getattr(config.data, "t_future", 0)
+        is_temporal = (t_past > 0) or (t_future > 0)
 
-        unet_cfg = config.model.generator.diffusion_unet
-        generator = create_unet_generator(
-            unet_cfg, normalization=config.data.normalization
-        ).to(device)
-
-        print(
-            summary(
-                generator,
-                input_size=[(1, unet_cfg.in_channels, unet_cfg.sample_size[0], unet_cfg.sample_size[1]), (1,)],
-                dtypes=[torch.float32, torch.long],
-                verbose=0,
+        if is_temporal:
+            from ml_benchmark_spategan.model.generators.unet3d import (
+                create_unet3d_generator,
             )
-        )
+
+            unet_cfg = config.model.generator.diffusion_unet
+            generator = create_unet3d_generator(
+                unet_cfg,
+                normalization=config.data.normalization,
+                t_past=t_past,
+                t_future=t_future,
+                base_channels=unet_cfg.in_channels
+                - 1,  # Exclude noise channel from base
+            ).to(device)
+
+            # Calculate actual input channels for temporal case
+            num_time_steps = t_past + t_future + 1
+            actual_in_channels = (unet_cfg.in_channels - 1) * num_time_steps + 1
+
+            print(
+                summary(
+                    generator,
+                    input_size=[
+                        (
+                            1,
+                            actual_in_channels,
+                            unet_cfg.sample_size[0],
+                            unet_cfg.sample_size[1],
+                        ),
+                        (1,),
+                    ],
+                    dtypes=[torch.float32, torch.long],
+                    verbose=0,
+                )
+            )
+        else:
+            from ml_benchmark_spategan.model.generators.unet2d import (
+                create_unet_generator,
+            )
+
+            unet_cfg = config.model.generator.diffusion_unet
+            generator = create_unet_generator(
+                unet_cfg, normalization=config.data.normalization
+            ).to(device)
+
+            print(
+                summary(
+                    generator,
+                    input_size=[
+                        (
+                            1,
+                            unet_cfg.in_channels,
+                            unet_cfg.sample_size[0],
+                            unet_cfg.sample_size[1],
+                        ),
+                        (1,),
+                    ],
+                    dtypes=[torch.float32, torch.long],
+                    verbose=0,
+                )
+            )
 
         return generator
 

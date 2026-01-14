@@ -75,6 +75,29 @@ python evaluation/model_selection_score.py runs/* --compare --weights-config wei
 
 ---
 
+## Weights & Biases Upload
+
+Upload completed training runs to W&B for tracking and visualization:
+
+```bash
+# Sync all new runs
+python sync_to_wandb.py
+
+# Dry run (preview what would be uploaded)
+python sync_to_wandb.py --dry-run
+
+# Re-upload existing runs
+python sync_to_wandb.py --force
+
+# Sync specific runs directory
+python sync_to_wandb.py --runs-dir runs/archive
+
+# Add custom tags
+python sync_to_wandb.py --tags experiment_v2,baseline
+```
+
+---
+
 ## Configuration
 
 All training parameters set in `config.yml`. Key settings:

@@ -29,6 +29,7 @@ dependencies = [
     "fsspec>=2024.6.1",
     "torchinfo",
     "diffusers",
+    "wandb",
 ]
 
 [project.scripts]

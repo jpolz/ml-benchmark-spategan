@@ -19,6 +19,54 @@ import torch.nn.functional as F
 import xarray as xr
 from torch.utils.data import DataLoader, Dataset
 
+
+def temporal_collate_fn(batch):
+    """
+    Custom collate function to handle temporal dimensions.
+
+    Reshapes temporal data from (T, C, H, W) to (C*T, H, W) by stacking
+    temporal frames as channels for 2D UNet processing.
+
+    Args:
+        batch: List of samples from Dataset.__getitem__
+               Each sample is either (x, y) or (x, y, doy)
+               where x can be (C, H, W) or (T, C, H, W)
+
+    Returns:
+        Batched tensors with temporal dimension flattened into channels
+    """
+    # Check if batch contains doy
+    has_doy = len(batch[0]) == 3
+
+    if has_doy:
+        x_list, y_list, doy_list = zip(*batch)
+    else:
+        x_list, y_list = zip(*batch)
+        doy_list = None
+
+    # Check if x has temporal dimension (4D: T, C, H, W vs 3D: C, H, W)
+    if x_list[0].ndim == 4:
+        # Temporal case: reshape (T, C, H, W) -> (C*T, H, W)
+        x_reshaped = []
+        for x in x_list:
+            T, C, H, W = x.shape
+            # Reshape to (C*T, H, W) by flattening temporal and channel dims
+            x_flat = x.permute(1, 0, 2, 3).reshape(C * T, H, W)
+            x_reshaped.append(x_flat)
+        x_batch = torch.stack(x_reshaped)
+    else:
+        # Non-temporal case: just stack normally
+        x_batch = torch.stack(x_list)
+
+    y_batch = torch.stack(y_list)
+
+    if has_doy:
+        doy_batch = torch.stack(doy_list)
+        return x_batch, y_batch, doy_batch
+    else:
+        return x_batch, y_batch
+
+
 from ..utils.normalize import normalize_predictors
 
 
@@ -463,11 +511,17 @@ def build_dataloaders(cf):
     sampler = torch.utils.data.RandomSampler(
         dataset_training, replacement=False, num_samples=num_samples
     )
+
+    # Use temporal collate function if temporal dimensions are active
+    is_temporal = (cf.data.t_past > 0) or (cf.data.t_future > 0)
+    collate_fn = temporal_collate_fn if is_temporal else None
+
     dataloader_train = DataLoader(
         dataset=dataset_training,
         batch_size=cf.training.batch_size,
         sampler=sampler,
         num_workers=cf.data.num_workers,
+        collate_fn=collate_fn,
     )
 
     # 2D y_test
@@ -479,11 +533,16 @@ def build_dataloaders(cf):
         orography=orography_array,
         doy=doy_test if getattr(cf.data, "use_doy", False) else None,
     )
+
+    # Use temporal collate function if temporal dimensions are active
+    # Note: test dataset uses EmulationTrainingDataset which doesn't have temporal support yet
+    # but we keep this for consistency in case it's added later
     test_dataloader = DataLoader(
         dataset=dataset_test,
         batch_size=cf.training.batch_size,
         shuffle=False,
         num_workers=cf.data.num_workers,
+        collate_fn=None,  # Test dataset doesn't support temporal yet
     )
 
     # Store normalization parameters for denormalization
