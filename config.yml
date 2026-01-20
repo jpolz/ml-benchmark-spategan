@@ -3,7 +3,7 @@ data:
   domain: SA # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
-  var_target: pr # tasmax or pr 
+  var_target: pr     # tasmax or pr 
   normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
   num_workers: 4
   t_past: 0  # number of past time steps as input
@@ -13,33 +13,31 @@ data:
 
 # Training configuration
 training:
-  batch_size: 16
-  ensemble_size: 3
+  batch_size: 32
+  ensemble_size: 5
   noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
   epochs: 180
-  batches_per_epoch: null  # set to null to use all data; otherwise set an integer value
+  batches_per_epoch:       # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
   n_critic: 1  # number of discriminator updates per generator update
   gradient_penalty_weight: 0.0  # R1 gradient penalty weight for discriminator regularization (0.0 to disable, typical: 0.1-1.0)
-  
   # Learning rate scheduler with warmup and exponential decay
   warmup_epochs: 5  # Number of epochs for linear warmup phase
   plateau_epochs: 30  # Number of epochs to maintain target LR before decay starts
   transition_epochs: 150  # Number of epochs over which to transition to decayed LR
   lr_decay_gamma: 0.97  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
   warmup_start_lr: 1.0e-7  # Starting learning rate for warmup phase
-  
   generator:
-    learning_rate: 0.00005
+    learning_rate: 0.0001
     optimizer: "Adam"
-    scheduler: null
+    scheduler:
     beta1: 0.0
     beta2: 0.999
     weight_decay: 0.0001
   discriminator:
     learning_rate: 0.0005
     optimizer: "Adam"
-    scheduler: null
+    scheduler:
     beta1: 0.0
     beta2: 0.999
     weight_decay: 0.0001
@@ -47,36 +45,39 @@ training:
   # early_stopping: true # not implemented
   # patience: 10 # not implemented
   checkpoint_dir: "checkpoints"
-  fss_loss: False # mainly for precip
+  fss_loss: false # mainly for precip
   loss_weights:
-    l1: 0.7
-    mse: 1.0
-    gan: 0.01
+    l1: 0.5
+    mse: 1.5
+    gan: 0.001
     fss: 0.0
 
 # Model configuration
 model:
   architecture: "diffusion_unet" # "diffusion_unet" or "spategan" or "deepesd"
-  use_learnable_upsampler: true  # Use learnable conv-based upsampling instead of fixed bilinear
-  
+  use_learnable_upsampler: false # Use learnable conv-based upsampling instead of fixed bilinear
   # Generator architecture configurations
   generator:
     diffusion_unet:
       sample_size: [128, 128]
       in_channels: 16  # 15 input + 1 noise
       out_channels: 1
-      layers_per_block: 2
-      block_out_channels: [64, 64, 128, 256]
+      layers_per_block: 1
+      block_out_channels:
+      - 32
+      - 64
+      - 128
+      - 256
       down_block_types:
-        - "DownBlock2D"
-        - "DownBlock2D"
-        - "DownBlock2D"
-        - "AttnDownBlock2D"
+      - "DownBlock2D"
+      - "DownBlock2D"
+      - "DownBlock2D"
+      - "AttnDownBlock2D"
       up_block_types:
-        - "AttnUpBlock2D"
-        - "UpBlock2D"
-        - "UpBlock2D"
-        - "UpBlock2D"
+      - "AttnUpBlock2D"
+      - "UpBlock2D"
+      - "UpBlock2D"
+      - "UpBlock2D"
     spategan:
       filter_size: 96
       n_input_channels: 15
@@ -84,10 +85,10 @@ model:
       dropout_seed: 42
       dropout_ratio: 0.2
     deepesd:
-      x_shape: [1,15,16,16]
-      y_shape: [1,128,128]
+      x_shape: [1, 15, 16, 16]
+      y_shape: [1, 128, 128]
       filters_last_conv: 1
-  
+
   # Legacy fields for backward compatibility
   discriminator_architecture: "spategan" # "unet" or "spategan"
   filter_size: 96
@@ -110,7 +111,7 @@ model:
     # Using negative stride to indicate upsample is not supported, so we need 1 block: 16 -> 16
     lr_channels: [32]
     # Use LR path (coarse input)? Set to false for ablation baseline (HR only)
-    use_lr_path: true
+    use_lr_path: false
     # Combined path channels after concatenating hr and lr features
     # Each entry creates one ResidualBlock2D with stride=2
     # REDUCED from [256] to prevent overfitting
@@ -122,7 +123,7 @@ model:
     # Dropout rate for regularization (0.0 to disable)
     dropout: 0.2
     # Enable spectral normalization for stability
-    spectral_norm: true
+    spectral_norm: false
 
 # Evaluation configuration
 evaluation:

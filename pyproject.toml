@@ -30,6 +30,7 @@ dependencies = [
     "torchinfo",
     "diffusers",
     "wandb",
+    "ruamel.yaml",
 ]
 
 [project.scripts]
