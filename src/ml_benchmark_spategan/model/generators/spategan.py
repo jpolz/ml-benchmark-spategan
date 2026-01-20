@@ -5,108 +5,17 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from ml_benchmark_spategan.model.base import BaseModel
+from ml_benchmark_spategan.model.base import BaseModel, BaseWrapper
+from ml_benchmark_spategan.model.layers import CustomDropout, ResidualBlock2D
 
-
-class CustomDropout(nn.Module):
-    def __init__(self, p: float, d_seed: int):
-        super().__init__()
-        self.p = p
-        torch.manual_seed(d_seed)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        device = x.device
-        batch, channels, height, width = x.shape
-
-        mask_shape = (batch, channels, height, width)
-        mask = torch.bernoulli(torch.ones(mask_shape, device=device) * (1 - self.p))
-        mask = mask.repeat(1, 1, 1, 1) / (1 - self.p)
-
-        return x * mask
-
-
-class ResidualBlock2D(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        use_layer_norm: bool = True,
-        stride: int = 1,
-        padding_type: Optional[bool] = None,
-    ):
-        super().__init__()
-
-        padding = 0 if padding_type else 1
-        self.use_layer_norm = use_layer_norm
-        self.padding_type = padding_type
-
-        self.padding_layer = nn.ReflectionPad2d((1, 1, 1, 1)) if padding_type else None
-
-        self.conv1 = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=(3, 3),
-            stride=stride,
-            padding=padding,
-        )
-
-        self.conv2 = nn.Conv2d(
-            out_channels, out_channels, kernel_size=(3, 3), stride=1, padding=padding
-        )
-
-        # Shortcut connection with 1x1 convolution if input/output channels differ
-        if in_channels != out_channels or stride != 1:
-            self.shortcut = nn.Conv2d(
-                in_channels, out_channels, kernel_size=(1, 1), stride=stride
-            )
-        else:
-            self.shortcut = None
-
-        self.layer_norm1 = (
-            nn.GroupNorm(num_channels=out_channels, num_groups=32)
-            if use_layer_norm
-            else None
-        )
-        self.layer_norm2 = (
-            nn.GroupNorm(num_channels=out_channels, num_groups=32)
-            if use_layer_norm
-            else None
-        )
-        self.activation = nn.ReLU(inplace=True)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-
-        if self.padding_layer:
-            out = self.padding_layer(x)
-            out = self.conv1(out)
-        else:
-            out = self.conv1(x)
-
-        if self.layer_norm1 is not None:
-            out = self.layer_norm1(out)
-
-        out = self.activation(out)
-
-        if self.padding_layer:
-            out = self.padding_layer(out)
-            out = self.conv2(out)
-        else:
-            out = self.conv2(out)
-
-        if self.layer_norm2 is not None:
-            out = self.layer_norm2(out)
-
-        if self.shortcut is not None:
-            residual = self.shortcut(x)
-
-        out += residual
-        out = self.activation(out)
-
-        return out
+###########################################################################
+### SUPPORTING LAYERS
+###########################################################################
 
 
 class Interpolate(nn.Module):
+    """Bilinear interpolation layer for upsampling."""
+
     def __init__(self, scale_factor: tuple):
         super().__init__()
         self.interp = nn.functional.interpolate
@@ -118,11 +27,28 @@ class Interpolate(nn.Module):
 
 
 class Constraint(nn.Module):
+    """Identity constraint layer (placeholder for future constraints)."""
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
 
 
+###########################################################################
+### GENERATOR
+###########################################################################
+
+
 class Generator(BaseModel):
+    """
+    Spatial GAN generator model.
+
+    CNN-based generator with residual blocks that directly generates
+    high-resolution output from low-resolution input.
+
+    Args:
+        cf: Configuration object with model parameters
+    """
+
     def __init__(self, cf):
         super().__init__()
 
@@ -259,7 +185,7 @@ class Generator(BaseModel):
             return self(x, dropout_seed)
 
 
-class SpaGANWrapper:
+class SpaGANWrapper(BaseWrapper):
     """
     Inference wrapper for SpaGAN and UNet2D generator models.
 
@@ -271,68 +197,46 @@ class SpaGANWrapper:
         config: Model configuration object
         checkpoint_epoch: Specific epoch to load (None for final model)
         device: Device to run model on
+        orography: Optional orography tensor for conditioning
     """
 
     def __init__(
         self,
         run_dir: str,
         config,
-        checkpoint_epoch: int = None,
-        device: torch.device = None,
-        orography: torch.Tensor = None,
+        checkpoint_epoch: Optional[int] = None,
+        device: Optional[torch.device] = None,
+        orography: Optional[torch.Tensor] = None,
     ):
         from pathlib import Path
 
-        from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-
-        self.device = device or torch.device("cpu")
-        self.run_dir = Path(run_dir)
-        self.config = config
-        self.orography = orography  # Store orography if provided
-
-        # Initialize generator based on architecture
-        self._load_generator()
-
-        # Load checkpoint - either specific epoch or final model
+        # Determine checkpoint name based on epoch
         if checkpoint_epoch is not None:
-            checkpoint_path = (
-                self.run_dir / "checkpoints" / f"checkpoint_epoch_{checkpoint_epoch}.pt"
-            )
+            checkpoint_name = f"checkpoints/checkpoint_epoch_{checkpoint_epoch}.pt"
         else:
-            checkpoint_path = self.run_dir / "checkpoints" / "final_models.pt"
+            checkpoint_name = "checkpoints/final_models.pt"
 
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-        checkpoint = torch.load(
-            checkpoint_path, map_location=self.device, weights_only=False
+        # Initialize base class
+        super().__init__(
+            run_dir=Path(run_dir),
+            checkpoint_name=checkpoint_name,
+            device=device,
         )
-        self.model.load_state_dict(checkpoint["generator_state_dict"])
-        self.model.to(self.device)
-        self.model.eval()
 
-        # Load upsampler if it exists in checkpoint
+        self.config = config
+        self.orography = orography
         self.upsampler = None
-        if "upsampler_state_dict" in checkpoint:
-            # Recreate the upsampler architecture with correct number of input channels
-            n_input_channels = self.config.model.get("n_input_channels", 15)
-            self.upsampler = LearnableUpsampler(in_channels=n_input_channels).to(
-                self.device
-            )
-            self.upsampler.load_state_dict(checkpoint["upsampler_state_dict"])
-            self.upsampler.eval()
+        self.checkpoint_epoch = checkpoint_epoch
 
-        self.checkpoint_epoch = checkpoint.get("epoch", checkpoint_epoch)
-
-        # Load normalization parameters if they exist
-        self.y_min = None
-        self.y_max = None
-        self.y_min_log = None
-        self.y_max_log = None
+        # Load model and weights
+        self._load_model()
         self._load_normalization()
 
-    def _load_generator(self):
-        """Load generator architecture."""
+    def _load_model(self):
+        """Load generator architecture and weights."""
+        from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
+
+        # Initialize generator based on architecture
         arch = self.config.model.get("architecture") or self.config.model.get(
             "generator_architecture"
         )
@@ -352,49 +256,41 @@ class SpaGANWrapper:
         else:
             raise ValueError(f"Unknown architecture: {arch}")
 
-    def _load_normalization(self):
-        """Load normalization parameters."""
-        import xarray as xr
+        # Load checkpoint
+        checkpoint_path = self.run_dir / self.checkpoint_name
 
-        ymin_path = self.run_dir / "y_min.nc"
-        ymax_path = self.run_dir / "y_max.nc"
-        ymin_log_path = self.run_dir / "y_min_log.nc"
-        ymax_log_path = self.run_dir / "y_max_log.nc"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        if ymin_path.exists() and ymax_path.exists():
-            self.y_min = xr.open_dataarray(ymin_path)
-            self.y_max = xr.open_dataarray(ymax_path)
+        checkpoint = torch.load(
+            checkpoint_path, map_location=self.device, weights_only=False
+        )
+        self.model.load_state_dict(checkpoint["generator_state_dict"])
+        self.model.to(self.device)
+        self.model.eval()
 
-        if ymin_log_path.exists() and ymax_log_path.exists():
-            self.y_min_log = xr.open_dataarray(ymin_log_path)
-            self.y_max_log = xr.open_dataarray(ymax_log_path)
+        # Load upsampler if it exists in checkpoint
+        if "upsampler_state_dict" in checkpoint:
+            # Recreate the upsampler architecture with correct number of input channels
+            n_input_channels = self.config.model.get("n_input_channels", 15)
+            self.upsampler = LearnableUpsampler(in_channels=n_input_channels).to(
+                self.device
+            )
+            self.upsampler.load_state_dict(checkpoint["upsampler_state_dict"])
+            self.upsampler.eval()
 
-    def _build_norm_params(self) -> dict:
-        """Build norm_params dict for denormalization."""
-        norm_params = {
-            "normalization": self.config.data.get("normalization", "minus1_to_plus1")
-        }
-
-        if self.y_min is not None:
-            norm_params["y_min"] = self.y_min
-        if self.y_max is not None:
-            norm_params["y_max"] = self.y_max
-        if self.y_min_log is not None:
-            norm_params["y_min_log"] = self.y_min_log
-        if self.y_max_log is not None:
-            norm_params["y_max_log"] = self.y_max_log
-
-        return norm_params
+        if self.checkpoint_epoch is None:
+            self.checkpoint_epoch = checkpoint.get("epoch", None)
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Generate predictions from input.
+        Generate predictions from input with proper preprocessing and denormalization.
 
         Args:
-            x: Input tensor
+            x: Input tensor (B, C, H, W)
 
         Returns:
-            Denormalized predictions
+            Denormalized predictions (B, 1, H_out, W_out)
         """
         from ml_benchmark_spategan.utils.interpolate import (
             add_noise_channel,
@@ -432,7 +328,7 @@ class SpaGANWrapper:
 
                 x_with_noise = add_noise_channel(x_hr, noise_std=0.2)
 
-                # Generate
+                # Generate with timestep conditioning
                 timesteps = torch.zeros(x.shape[0], device=self.device)
                 output = self.model(x_with_noise, timesteps)
 
@@ -443,16 +339,17 @@ class SpaGANWrapper:
             else:
                 raise ValueError(f"Unknown architecture: {arch}")
 
-            # Denormalize if needed
+            # Denormalize predictions
             norm_params = self._build_norm_params()
             output = denormalize_predictions(output, norm_params)
 
             return output
 
     def to(self, device: torch.device):
-        """Move model to specified device."""
-        self.device = device
-        self.model = self.model.to(device)
+        """Move model and upsampler to specified device."""
+        super().to(device)
         if self.upsampler is not None:
             self.upsampler = self.upsampler.to(device)
+        if self.orography is not None:
+            self.orography = self.orography.to(device)
         return self
