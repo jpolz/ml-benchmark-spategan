@@ -51,7 +51,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import xarray as xr
-from IPython.display import clear_output
 from tqdm import tqdm
 
 from ml_benchmark_spategan.config import config
@@ -760,7 +759,6 @@ def main():
 
         # Print progress and plot
         if (epoch + 1) % cf.logging.log_frequency == 0 or epoch == 0:
-            clear_output(wait=True)
             logger.info(f"Epoch {epoch + 1}/{cf.training.epochs}")
             logger.info(
                 f"  Generator Loss:     {train_gen_loss:.6f} (LR: {current_gen_lr:.2e})"
