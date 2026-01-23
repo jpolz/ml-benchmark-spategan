@@ -187,17 +187,18 @@ class Generator(BaseModel):
 
 class SpaGANWrapper(BaseWrapper):
     """
-    Inference wrapper for SpaGAN and UNet2D generator models.
+    Inference wrapper for SpatialGAN generator models only.
 
     Handles model loading, checkpoint management, normalization parameter loading,
-    and prediction with proper preprocessing and denormalization.
+    and prediction for the SpatialGAN architecture specifically.
+
+    Note: For UNet/diffusion_unet models, use UNetWrapper instead.
 
     Args:
         run_dir: Directory containing the trained model
         config: Model configuration object
         checkpoint_epoch: Specific epoch to load (None for final model)
         device: Device to run model on
-        orography: Optional orography tensor for conditioning
     """
 
     def __init__(
@@ -206,7 +207,6 @@ class SpaGANWrapper(BaseWrapper):
         config,
         checkpoint_epoch: Optional[int] = None,
         device: Optional[torch.device] = None,
-        orography: Optional[torch.Tensor] = None,
     ):
         from pathlib import Path
 
@@ -224,8 +224,6 @@ class SpaGANWrapper(BaseWrapper):
         )
 
         self.config = config
-        self.orography = orography
-        self.upsampler = None
         self.checkpoint_epoch = checkpoint_epoch
 
         # Load model and weights
@@ -233,28 +231,19 @@ class SpaGANWrapper(BaseWrapper):
         self._load_normalization()
 
     def _load_model(self):
-        """Load generator architecture and weights."""
-        from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-
-        # Initialize generator based on architecture
+        """Load SpatialGAN generator architecture and weights."""
+        # Verify this is a SpatialGAN model
         arch = self.config.model.get("architecture") or self.config.model.get(
             "generator_architecture"
         )
 
-        if arch == "spategan":
-            self.model = Generator(self.config.model)
-
-        elif arch == "diffusion_unet":
-            from ml_benchmark_spategan.model.generators.unet2d import (
-                create_unet_generator,
+        if arch != "spategan":
+            raise ValueError(
+                f"SpaGANWrapper is only for 'spategan' architecture, got '{arch}'. "
+                f"For UNet models, use UNetWrapper instead."
             )
 
-            # Get UNet config from new structure
-            unet_cfg = self.config.model.generator.diffusion_unet
-            normalization = self.config.data.get("normalization", "minus1_to_plus1")
-            self.model = create_unet_generator(unet_cfg, normalization=normalization)
-        else:
-            raise ValueError(f"Unknown architecture: {arch}")
+        self.model = Generator(self.config.model)
 
         # Load checkpoint
         checkpoint_path = self.run_dir / self.checkpoint_name
@@ -269,87 +258,31 @@ class SpaGANWrapper(BaseWrapper):
         self.model.to(self.device)
         self.model.eval()
 
-        # Load upsampler if it exists in checkpoint
-        if "upsampler_state_dict" in checkpoint:
-            # Recreate the upsampler architecture with correct number of input channels
-            n_input_channels = self.config.model.get("n_input_channels", 15)
-            self.upsampler = LearnableUpsampler(in_channels=n_input_channels).to(
-                self.device
-            )
-            self.upsampler.load_state_dict(checkpoint["upsampler_state_dict"])
-            self.upsampler.eval()
-
         if self.checkpoint_epoch is None:
             self.checkpoint_epoch = checkpoint.get("epoch", None)
 
     def predict(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Generate predictions from input with proper preprocessing and denormalization.
+        Generate predictions from input (SpatialGAN-specific).
+
+        SpatialGAN works directly on 16x16 input without upsampling or noise channels.
 
         Args:
-            x: Input tensor (B, C, H, W)
+            x: Input tensor (B, C, 16, 16)
 
         Returns:
-            Denormalized predictions (B, 1, H_out, W_out)
+            Denormalized predictions (B, 1, 128, 128)
         """
-        from ml_benchmark_spategan.utils.interpolate import (
-            add_noise_channel,
-            upscale_bilinear,
-        )
         from ml_benchmark_spategan.utils.normalize import denormalize_predictions
 
         x = x.to(self.device)
 
         with torch.no_grad():
-            arch = self.config.model.get("architecture") or self.config.model.get(
-                "generator_architecture"
-            )
-
-            if arch == "diffusion_unet":
-                # Diffusion UNet needs upscaled input with noise channel
-                # Upscale - use learnable upsampler if available
-                if self.upsampler is not None:
-                    x_hr = self.upsampler(x)
-                else:
-                    x_hr = upscale_bilinear(x, target_size=(128, 128))
-
-                # Concatenate orography if available and configured
-                if (
-                    self.config.data.get("use_orography", False)
-                    and self.orography is not None
-                ):
-                    # Repeat orography for each sample in batch
-                    orography_batch = (
-                        self.orography.repeat(x.shape[0], 1, 1)
-                        .unsqueeze(1)
-                        .to(self.device)
-                    )
-                    x_hr = torch.cat([x_hr, orography_batch], dim=1)
-
-                x_with_noise = add_noise_channel(x_hr, noise_std=0.2)
-
-                # Generate with timestep conditioning
-                timesteps = torch.zeros(x.shape[0], device=self.device)
-                output = self.model(x_with_noise, timesteps)
-
-            elif arch == "spategan":
-                # SpatGAN works directly on 16x16 input, no upscaling or noise
-                output = self.model(x)
-
-            else:
-                raise ValueError(f"Unknown architecture: {arch}")
+            # SpatGAN generates high-res directly from low-res input
+            output = self.model(x)
 
             # Denormalize predictions
             norm_params = self._build_norm_params()
             output = denormalize_predictions(output, norm_params)
 
             return output
-
-    def to(self, device: torch.device):
-        """Move model and upsampler to specified device."""
-        super().to(device)
-        if self.upsampler is not None:
-            self.upsampler = self.upsampler.to(device)
-        if self.orography is not None:
-            self.orography = self.orography.to(device)
-        return self

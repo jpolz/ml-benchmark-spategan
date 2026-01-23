@@ -3,7 +3,7 @@
 from .deepesd import DeepESD, DeepESDWrapper
 from .spategan import Generator as SpatialGANGenerator
 from .spategan import SpaGANWrapper
-from .unet2d import UNetWithActivation, create_unet_generator
+from .unet2d import UNetWithActivation, UNetWrapper, create_unet_generator
 
 __all__ = [
     "SpatialGANGenerator",
@@ -11,5 +11,6 @@ __all__ = [
     "DeepESD",
     "DeepESDWrapper",
     "UNetWithActivation",
+    "UNetWrapper",
     "create_unet_generator",
 ]

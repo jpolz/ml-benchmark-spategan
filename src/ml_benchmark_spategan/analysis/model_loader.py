@@ -11,10 +11,14 @@ def load_model(model_type: str, **kwargs):
         model_type: Type of model ('deepesd', 'gan')
         **kwargs: Model-specific arguments
             - For 'deepesd': model_path, x_shape, y_shape, filters_last_conv, device
-            - For 'gan': run_dir, config, checkpoint_epoch, device
+            - For 'gan': run_dir, config, checkpoint_epoch, device, orography
 
     Returns:
         Model wrapper instance with predict() method
+
+    Note:
+        For 'gan' model_type, the appropriate wrapper (SpaGANWrapper or UNetWrapper)
+        is automatically selected based on the config architecture.
 
     Example:
         >>> # Load DeepESD model
@@ -23,7 +27,7 @@ def load_model(model_type: str, **kwargs):
         ...                    x_shape=(1, 15, 16, 16),
         ...                    y_shape=(1, 16384))
         >>>
-        >>> # Load GAN model
+        >>> # Load GAN model (auto-detects SpaGAN vs UNet)
         >>> model = load_model('gan',
         ...                    run_dir='runs/20251218_0211_zjh10zws',
         ...                    config=config_obj)
@@ -44,15 +48,39 @@ def load_model(model_type: str, **kwargs):
         )
 
     elif model_type.lower() == "gan":
-        from ml_benchmark_spategan.model.generators.spategan import SpaGANWrapper
+        config = kwargs["config"]
 
-        return SpaGANWrapper(
-            run_dir=kwargs["run_dir"],
-            config=kwargs["config"],
-            checkpoint_epoch=kwargs.get("checkpoint_epoch", None),
-            device=device,
-            orography=kwargs.get("orography", None),
+        # Determine architecture to select appropriate wrapper
+        arch = config.model.get("architecture") or config.model.get(
+            "generator_architecture", "spategan"
         )
+
+        if arch == "spategan":
+            from ml_benchmark_spategan.model.generators.spategan import SpaGANWrapper
+
+            return SpaGANWrapper(
+                run_dir=kwargs["run_dir"],
+                config=config,
+                checkpoint_epoch=kwargs.get("checkpoint_epoch", None),
+                device=device,
+            )
+
+        elif arch == "diffusion_unet":
+            from ml_benchmark_spategan.model.generators.unet2d import UNetWrapper
+
+            return UNetWrapper(
+                run_dir=kwargs["run_dir"],
+                config=config,
+                checkpoint_epoch=kwargs.get("checkpoint_epoch", None),
+                device=device,
+                orography=kwargs.get("orography", None),
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown GAN architecture: {arch}. "
+                f"Supported: 'spategan', 'diffusion_unet'"
+            )
 
     else:
         raise ValueError(
