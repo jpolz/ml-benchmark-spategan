@@ -1,9 +1,11 @@
+from pathlib import Path
+
 import cartopy.crs as ccrs
 import matplotlib.colors as mcolors
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+import numpy as np
 import xarray as xr
-from pathlib import Path
 
 
 def plot_psd_comparison(results: dict, output_dir: Path, var_target: str):
@@ -127,9 +129,21 @@ def plot_prediction_comparison(
     y_pred_clim = y_pred[var_target].mean(dim="time")
     diff_clim = y_pred_clim - y_test_clim
 
-    # Create figure with 3 rows, 3 columns
-    fig = plt.figure(figsize=(18, 12))
-    gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
+    # Compute temporal variance for each pixel
+    y_test_var = y_test[var_target].var(dim="time")
+    y_pred_var = y_pred[var_target].var(dim="time")
+    var_ratio = (
+        y_pred_var / y_test_var
+    )  # Variance ratio (>1 = overestimation, <1 = underestimation)
+
+    # Compute pixel-wise RMSE
+    pixel_rmse = ((y_pred[var_target] - y_test[var_target]) ** 2).mean(
+        dim="time"
+    ) ** 0.5
+
+    # Create figure with 5 rows, 3 columns
+    fig = plt.figure(figsize=(18, 20))
+    gs = gridspec.GridSpec(5, 3, figure=fig, hspace=0.3, wspace=0.3)
 
     # Determine vmin/vmax for each row
     if use_log_scale:
@@ -253,8 +267,67 @@ def plot_prediction_comparison(
         ax.set_title(title, fontsize=12, fontweight="bold")
         plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.05, fraction=0.046)
 
-    # Row 3: Statistics text
-    ax_stats = fig.add_subplot(gs[2, :])
+    # Row 3: Temporal Variance - Target, Prediction, Ratio
+    titles_row3 = [
+        "Target Variance",
+        "Prediction Variance",
+        "Variance Ratio (Pred/Target)",
+    ]
+    data_row3 = [y_test_var, y_pred_var, var_ratio]
+    cmaps_row3 = ["YlOrRd", "YlOrRd", "RdBu_r"]
+
+    for col, (title, data, cmap_i) in enumerate(
+        zip(titles_row3, data_row3, cmaps_row3)
+    ):
+        ax = fig.add_subplot(gs[2, col], projection=projection)
+
+        if col < 2:  # Variance plots
+            im = data.plot(
+                ax=ax,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap_i,
+                add_colorbar=False,
+            )
+        else:  # Variance ratio (centered at 1.0)
+            im = data.plot(
+                ax=ax,
+                transform=ccrs.PlateCarree(),
+                cmap=cmap_i,
+                vmin=0.5,
+                vmax=1.5,
+                add_colorbar=False,
+            )
+        ax.coastlines()
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    # Row 4: Pixel-wise RMSE and standard deviations
+    titles_row4 = [
+        "Pixel-wise RMSE",
+        "Target Std Dev",
+        "Prediction Std Dev",
+    ]
+    y_test_std = y_test[var_target].std(dim="time")
+    y_pred_std = y_pred[var_target].std(dim="time")
+    data_row4 = [pixel_rmse, y_test_std, y_pred_std]
+    cmaps_row4 = ["Reds", "viridis", "viridis"]
+
+    for col, (title, data, cmap_i) in enumerate(
+        zip(titles_row4, data_row4, cmaps_row4)
+    ):
+        ax = fig.add_subplot(gs[3, col], projection=projection)
+        im = data.plot(
+            ax=ax,
+            transform=ccrs.PlateCarree(),
+            cmap=cmap_i,
+            add_colorbar=False,
+        )
+        ax.coastlines()
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    # Row 5: Statistics text
+    ax_stats = fig.add_subplot(gs[4, :])
     ax_stats.axis("off")
 
     stats_text = f"""
@@ -271,6 +344,17 @@ def plot_prediction_comparison(
       Prediction range: [{y_pred_clim.min().values:.2f}, {y_pred_clim.max().values:.2f}]
       Difference range: [{diff_clim.min().values:.2f}, {diff_clim.max().values:.2f}]
       Mean difference: {diff_clim.mean().values:.4f}
+    
+    Variance Statistics:
+      Target variance range: [{y_test_var.min().values:.4f}, {y_test_var.max().values:.4f}]
+      Prediction variance range: [{y_pred_var.min().values:.4f}, {y_pred_var.max().values:.4f}]
+      Mean variance ratio: {var_ratio.mean().values:.4f} (1.0 = perfect match)
+      
+    Pixel-wise RMSE Statistics:
+      Min RMSE: {pixel_rmse.min().values:.4f}
+      Max RMSE: {pixel_rmse.max().values:.4f}
+      Mean RMSE: {pixel_rmse.mean().values:.4f}
+      Median RMSE: {pixel_rmse.median().values:.4f}
     """
 
     ax_stats.text(
@@ -296,3 +380,258 @@ def plot_prediction_comparison(
     plt.close()
 
     print(f"Prediction comparison plot saved to {output_path}")
+
+
+def plot_multi_experiment_comparison(
+    results: dict,
+    y_test: xr.Dataset,
+    var_target: str,
+    domain: str,
+    output_dir: Path,
+):
+    """
+    Create aggregate comparison plots across multiple experiments.
+
+    Focuses on spatial pattern variability and consistency across experiments.
+
+    Args:
+        results: Dictionary with all model results
+        y_test: Test target data (same for all models)
+        var_target: Target variable name
+        domain: Domain name (SA, NZ, ALPS)
+        output_dir: Directory to save plot
+    """
+    print("\n=== Generating multi-experiment comparison ===")
+
+    # Compute spatial statistics for each experiment
+    spatial_stats = {}
+    pixel_rmse_maps = {}
+    variance_ratios = {}
+    pred_std_maps = {}
+
+    for model_name, result in results.items():
+        y_pred = result["predictions"]
+
+        # Pixel-wise RMSE
+        pixel_rmse = ((y_pred[var_target] - y_test[var_target]) ** 2).mean(
+            dim="time"
+        ) ** 0.5
+        pixel_rmse_maps[model_name] = pixel_rmse
+
+        # Variance ratio
+        y_test_var = y_test[var_target].var(dim="time")
+        y_pred_var = y_pred[var_target].var(dim="time")
+        variance_ratio = y_pred_var / y_test_var
+        variance_ratios[model_name] = variance_ratio
+
+        # Prediction std dev
+        pred_std = y_pred[var_target].std(dim="time")
+        pred_std_maps[model_name] = pred_std
+
+        # Aggregate statistics
+        spatial_stats[model_name] = {
+            "mean_rmse": float(pixel_rmse.mean().values),
+            "std_rmse": float(pixel_rmse.std().values),
+            "mean_var_ratio": float(variance_ratio.mean().values),
+            "std_var_ratio": float(variance_ratio.std().values),
+            "mean_pred_std": float(pred_std.mean().values),
+            "std_pred_std": float(pred_std.std().values),
+        }
+
+    # Extract metric names and values
+    model_names = list(spatial_stats.keys())
+    n_models = len(model_names)
+
+    # Create figure with multiple subplots
+    fig = plt.figure(figsize=(20, 12))
+    gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.4, wspace=0.3)
+
+    # 1. Heatmap of RMSE statistics across experiments
+    ax1 = fig.add_subplot(gs[0, 0])
+    rmse_means = [spatial_stats[m]["mean_rmse"] for m in model_names]
+    rmse_stds = [spatial_stats[m]["std_rmse"] for m in model_names]
+    x_pos = np.arange(n_models)
+    ax1.bar(x_pos, rmse_means, yerr=rmse_stds, capsize=3, alpha=0.7, color="steelblue")
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(range(1, n_models + 1), fontsize=8)
+    ax1.set_xlabel("Experiment ID", fontsize=10)
+    ax1.set_ylabel("Mean Pixel-wise RMSE ± Std", fontsize=10)
+    ax1.set_title("Spatial RMSE: Mean and Variability", fontsize=12, fontweight="bold")
+    ax1.grid(axis="y", alpha=0.3)
+
+    # 2. Variance ratio distribution
+    ax2 = fig.add_subplot(gs[0, 1])
+    var_ratio_means = [spatial_stats[m]["mean_var_ratio"] for m in model_names]
+    var_ratio_stds = [spatial_stats[m]["std_var_ratio"] for m in model_names]
+    ax2.bar(
+        x_pos, var_ratio_means, yerr=var_ratio_stds, capsize=3, alpha=0.7, color="coral"
+    )
+    ax2.axhline(y=1.0, color="red", linestyle="--", linewidth=2, label="Perfect match")
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(range(1, n_models + 1), fontsize=8)
+    ax2.set_xlabel("Experiment ID", fontsize=10)
+    ax2.set_ylabel("Mean Variance Ratio ± Std", fontsize=10)
+    ax2.set_title(
+        "Temporal Variance Ratio (Pred/Target)", fontsize=12, fontweight="bold"
+    )
+    ax2.legend(fontsize=9)
+    ax2.grid(axis="y", alpha=0.3)
+
+    # 3. Prediction std dev consistency
+    ax3 = fig.add_subplot(gs[0, 2])
+    pred_std_means = [spatial_stats[m]["mean_pred_std"] for m in model_names]
+    pred_std_stds = [spatial_stats[m]["std_pred_std"] for m in model_names]
+    ax3.bar(
+        x_pos,
+        pred_std_means,
+        yerr=pred_std_stds,
+        capsize=3,
+        alpha=0.7,
+        color="mediumseagreen",
+    )
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(range(1, n_models + 1), fontsize=8)
+    ax3.set_xlabel("Experiment ID", fontsize=10)
+    ax3.set_ylabel("Mean Prediction Std Dev ± Spatial Std", fontsize=10)
+    ax3.set_title("Prediction Variability Across Space", fontsize=12, fontweight="bold")
+    ax3.grid(axis="y", alpha=0.3)
+
+    # 4. Spatial pattern consistency: Std dev of pixel-wise RMSE across experiments
+    ax4 = fig.add_subplot(gs[1, :])
+    # Stack all pixel_rmse maps
+    rmse_stack = np.stack([pixel_rmse_maps[m].values for m in model_names])
+    rmse_across_exp_mean = np.mean(rmse_stack, axis=0)
+    rmse_across_exp_std = np.std(rmse_stack, axis=0)
+
+    # Plot as 2D heatmap
+    projection = ccrs.PlateCarree(central_longitude=180 if domain == "NZ" else 0)
+
+    ax4a = plt.subplot(gs[1, 0], projection=projection)
+    im = ax4a.pcolormesh(
+        y_test.lon.values if "lon" in y_test else y_test.x.values,
+        y_test.lat.values if "lat" in y_test else y_test.y.values,
+        rmse_across_exp_mean,
+        transform=ccrs.PlateCarree(),
+        cmap="Reds",
+    )
+    ax4a.coastlines()
+    ax4a.set_title(
+        "Mean Pixel-wise RMSE\n(across experiments)", fontsize=11, fontweight="bold"
+    )
+    plt.colorbar(im, ax=ax4a, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    ax4b = plt.subplot(gs[1, 1], projection=projection)
+    im = ax4b.pcolormesh(
+        y_test.lon.values if "lon" in y_test else y_test.x.values,
+        y_test.lat.values if "lat" in y_test else y_test.y.values,
+        rmse_across_exp_std,
+        transform=ccrs.PlateCarree(),
+        cmap="YlOrRd",
+    )
+    ax4b.coastlines()
+    ax4b.set_title(
+        "Std Dev of Pixel-wise RMSE\n(across experiments)",
+        fontsize=11,
+        fontweight="bold",
+    )
+    plt.colorbar(im, ax=ax4b, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    # Coefficient of variation (CV = std/mean)
+    rmse_cv = rmse_across_exp_std / (rmse_across_exp_mean + 1e-10)
+    ax4c = plt.subplot(gs[1, 2], projection=projection)
+    im = ax4c.pcolormesh(
+        y_test.lon.values if "lon" in y_test else y_test.x.values,
+        y_test.lat.values if "lat" in y_test else y_test.y.values,
+        rmse_cv,
+        transform=ccrs.PlateCarree(),
+        cmap="RdYlGn_r",
+        vmin=0,
+        vmax=0.5,
+    )
+    ax4c.coastlines()
+    ax4c.set_title(
+        "RMSE Coefficient of Variation\n(lower = more consistent)",
+        fontsize=11,
+        fontweight="bold",
+    )
+    plt.colorbar(im, ax=ax4c, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    # 5. Variance ratio spatial consistency
+    ax5 = fig.add_subplot(gs[2, :])
+    var_ratio_stack = np.stack([variance_ratios[m].values for m in model_names])
+    var_ratio_across_exp_mean = np.mean(var_ratio_stack, axis=0)
+    var_ratio_across_exp_std = np.std(var_ratio_stack, axis=0)
+
+    ax5a = plt.subplot(gs[2, 0], projection=projection)
+    im = ax5a.pcolormesh(
+        y_test.lon.values if "lon" in y_test else y_test.x.values,
+        y_test.lat.values if "lat" in y_test else y_test.y.values,
+        var_ratio_across_exp_mean,
+        transform=ccrs.PlateCarree(),
+        cmap="RdBu_r",
+        vmin=0.5,
+        vmax=1.5,
+    )
+    ax5a.coastlines()
+    ax5a.set_title(
+        "Mean Variance Ratio\n(across experiments)", fontsize=11, fontweight="bold"
+    )
+    plt.colorbar(im, ax=ax5a, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    ax5b = plt.subplot(gs[2, 1], projection=projection)
+    im = ax5b.pcolormesh(
+        y_test.lon.values if "lon" in y_test else y_test.x.values,
+        y_test.lat.values if "lat" in y_test else y_test.y.values,
+        var_ratio_across_exp_std,
+        transform=ccrs.PlateCarree(),
+        cmap="YlOrRd",
+    )
+    ax5b.coastlines()
+    ax5b.set_title(
+        "Std Dev of Variance Ratio\n(across experiments)",
+        fontsize=11,
+        fontweight="bold",
+    )
+    plt.colorbar(im, ax=ax5b, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    # Identify regions with consistent over/under-estimation
+    over_under_consistency = np.mean((var_ratio_stack > 1.0).astype(float), axis=0)
+    ax5c = plt.subplot(gs[2, 2], projection=projection)
+    im = ax5c.pcolormesh(
+        y_test.lon.values if "lon" in y_test else y_test.x.values,
+        y_test.lat.values if "lat" in y_test else y_test.y.values,
+        over_under_consistency,
+        transform=ccrs.PlateCarree(),
+        cmap="RdBu_r",
+        vmin=0,
+        vmax=1,
+    )
+    ax5c.coastlines()
+    ax5c.set_title(
+        "Fraction of Experiments\nwith Variance Ratio > 1",
+        fontsize=11,
+        fontweight="bold",
+    )
+    plt.colorbar(im, ax=ax5c, orientation="horizontal", pad=0.05, fraction=0.046)
+
+    fig.suptitle(
+        f"Multi-Experiment Spatial Pattern Comparison - {var_target} ({n_models} experiments)",
+        fontsize=16,
+        fontweight="bold",
+        y=0.995,
+    )
+
+    # Save plot
+    output_path = output_dir / f"multi_experiment_comparison_{var_target}.png"
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"Multi-experiment comparison plot saved to {output_path}")
+
+    # Also save spatial statistics to JSON
+    import json
+
+    stats_path = output_dir / f"multi_experiment_spatial_stats_{var_target}.json"
+    with open(stats_path, "w") as f:
+        json.dump(spatial_stats, f, indent=2)
+    print(f"Spatial statistics saved to {stats_path}")

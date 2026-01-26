@@ -54,7 +54,7 @@ training:
     l1: 0.5
     mse: 1.0
     gan: 0.01
-    fss: 0.01
+    fss: 0.0
 
 # Model configuration
 model:

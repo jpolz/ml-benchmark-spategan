@@ -2,29 +2,57 @@
 
 Quick reference for common tasks in ml-benchmark-spategan.
 
-## Run and Compare Parameter Sweeps
+## Parameter Sweeps and Ablation Studies
 
-### 1. Submit sweep jobs
+The new YAML-based sweep framework allows flexible parameter exploration with automatic job monitoring and cleanup.
+
+### 1. Submit a parameter sweep
 ```bash
-./submit_disc_sweep.sh        # CCGP partition (n_critic 2,3)
-./submit_disc_sweep_sdl.sh    # SDL partition (n_critic 1)
+# Submit sweep to CCGP partition
+./submit_sweep.sh sweeps/loss_weights_sweep.yml ccgp
+
+# Submit sweep to SDL partition
+./submit_sweep.sh sweeps/discriminator_sweep.yml sdl
+
+# Test with dry-run (no job submission)
+./submit_sweep.py sweeps/test_sweep.yml ccgp --dry-run
 ```
 
-### 2. Monitor progress
-```bash
-squeue -u $USER
-```
+Available sweep configs in `sweeps/`:
+- `loss_weights_sweep.yml` - L1, MSE, GAN loss weight ablations (8 combinations)
+- `discriminator_sweep.yml` - Discriminator architecture ablations (24 combinations)
+- `test_sweep.yml` - Quick validation sweep (2 combinations)
 
-### 3. Compare all runs after completion
+### 2. Compare results after completion
 ```bash
-# Compare all sweep runs
-./comparison_scripts/compare_disc_sweep.sh tmp_cfg/disc_sweep_*/run_manifest.txt
+# Automatically waits for jobs to finish, then compares and cleans up
+./compare_sweep.sh tmp_cfg/sweep_name_*/run_manifest.txt
 
 # Compare with a baseline run
-./comparison_scripts/compare_disc_sweep.sh --baseline runs/YYYYMMDD_HHMM_xxxxxxxx tmp_cfg/disc_sweep_*/run_manifest.txt
+./compare_sweep.sh tmp_cfg/sweep_name_*/run_manifest.txt --baseline runs/baseline_id
+
+# Compare immediately without waiting
+./compare_sweep.sh tmp_cfg/sweep_name_*/run_manifest.txt --no-wait
+
+# Keep temporary config files
+./compare_sweep.sh tmp_cfg/sweep_name_*/run_manifest.txt --no-cleanup
 ```
 
-Results saved to `analysis/results/disc_sweep_comparison_<timestamp>/`
+Results saved to `analysis/results/<sweep_name>_comparison_<timestamp>/`
+
+### 3. Create custom sweeps
+```bash
+# Copy an existing sweep config
+cp sweeps/loss_weights_sweep.yml sweeps/my_sweep.yml
+
+# Edit parameters and values in the YAML file
+vim sweeps/my_sweep.yml
+
+# Submit your custom sweep
+./submit_sweep.sh sweeps/my_sweep.yml ccgp
+```
+
+See [SWEEP_FRAMEWORK.md](SWEEP_FRAMEWORK.md) for detailed documentation.
 
 ---
 

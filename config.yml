@@ -1,6 +1,6 @@
 # Data configuration
 data:
-  domain: SA # one of SA, ALPS or NZ
+  domain: NZ # one of SA, ALPS or NZ
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr     # tasmax or pr 
@@ -14,21 +14,21 @@ data:
 # Training configuration
 training:
   batch_size: 32
-  ensemble_size: 5
+  ensemble_size: 7
   noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
-  epochs: 180
+  epochs: 300
   batches_per_epoch:       # set to null to use all data; otherwise set an integer value
   batches_per_validation: 5  # set to null to use all data; otherwise set an integer value
-  n_critic: 1  # number of discriminator updates per generator update
+  n_critic: 3  # number of discriminator updates per generator update
   gradient_penalty_weight: 0.0  # R1 gradient penalty weight for discriminator regularization (0.0 to disable, typical: 0.1-1.0)
   # Learning rate scheduler with warmup and exponential decay
   warmup_epochs: 5  # Number of epochs for linear warmup phase
-  plateau_epochs: 30  # Number of epochs to maintain target LR before decay starts
-  transition_epochs: 150  # Number of epochs over which to transition to decayed LR
+  plateau_epochs: 10  # Number of epochs to maintain target LR before decay starts
+  transition_epochs: 250  # Number of epochs over which to transition to decayed LR
   lr_decay_gamma: 0.97  # Exponential decay factor applied after plateau (lr *= gamma each epoch)
   warmup_start_lr: 1.0e-7  # Starting learning rate for warmup phase
   generator:
-    learning_rate: 0.0001
+    learning_rate: 0.00005
     optimizer: "Adam"
     scheduler:
     beta1: 0.0
@@ -48,8 +48,8 @@ training:
   fss_loss: false # mainly for precip
   loss_weights:
     l1: 0.5
-    mse: 1.5
-    gan: 0.001
+    mse: 1.0
+    gan: 0.01
     fss: 0.0
 
 # Model configuration
@@ -136,6 +136,6 @@ logging:
   log_dir: "logs"
   wandb: false # not implemented
   log_frequency: 1 # number of epochs between loss plots
-  checkpoint_frequency: 180 # number of epochs between checkpoints
+  checkpoint_frequency: 100 # number of epochs between checkpoints
   map_frequency: 20 # number of epochs between plotting maps
-  diagnostic_frequency: 3 # number of epochs between computing diagnostics
+  diagnostic_frequency: 5 # number of epochs between computing diagnostics
