@@ -46,11 +46,19 @@ training:
   # patience: 10 # not implemented
   checkpoint_dir: "checkpoints"
   fss_loss: false # mainly for precip
+  # Learnable noise settings (for stochastic generation)
+  noise_learnable: false # Enable learnable noise scale
+  noise_type: "global" # "global" (single scalar) or "spatial" (per-pixel map)
+  noise_init: 0.05 # Initial noise scale (use 0.05 for tasmax, 0.1 for pr)
+  noise_min: 0.0 # Minimum allowed noise scale
+  noise_max: 1.0 # Maximum allowed noise scale
+  # Loss weights
   loss_weights:
     l1: 0.5
     mse: 1.0
     gan: 0.01
     fss: 0.0
+    diversity: 0.0 # Diversity bonus to encourage ensemble spread (negative variance loss)
 
 # Model configuration
 model:

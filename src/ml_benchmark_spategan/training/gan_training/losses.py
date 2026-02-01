@@ -83,6 +83,19 @@ class GANLossManager:
             losses["gan"] = gan_loss.item()
             total_loss = total_loss + self.weights["gan"] * gan_loss
 
+        # Diversity bonus (maximize variance across ensemble members)
+        if self.weights.get("diversity", 0.0) > 0.0 and gen_ensemble.shape[1] > 1:
+            # Compute variance across ensemble dimension
+            # Negative sign: we want to MAXIMIZE variance (minimize negative variance)
+            ensemble_variance = gen_ensemble.var(dim=1, unbiased=False).mean()
+            diversity_loss = -ensemble_variance
+            losses["diversity"] = diversity_loss.item()
+            losses["ensemble_variance"] = ensemble_variance.item()  # For monitoring
+            total_loss = total_loss + self.weights["diversity"] * diversity_loss
+        else:
+            losses["diversity"] = 0.0
+            losses["ensemble_variance"] = 0.0
+
         # FSS - always compute as a diagnostic metric
         if self.fss_criterion is not None:
             fss_loss = self.fss_criterion(gen_ensemble, target)

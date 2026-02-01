@@ -22,6 +22,7 @@ from ml_benchmark_spategan.dataloader.dataloader import (
 )
 from ml_benchmark_spategan.utils.normalize import normalize_predictors
 from ml_benchmark_spategan.visualization.plot_results import (
+    plot_lag1_autocorr_maps,
     plot_prediction_comparison,
     plot_psd_comparison,
 )
@@ -259,6 +260,10 @@ def evaluate_model(
         (lag1_pred[var_target] - lag1_test[var_target]).mean().values.item()
     )
 
+    # Store spatial lag-1 fields for visualization
+    lag1_test_spatial = lag1_test
+    lag1_pred_spatial = lag1_pred
+
     # Interannual variability
     interann_test = indices.interannual_var(y_test, var_target)
     interann_pred = indices.interannual_var(y_pred, var_target)
@@ -285,6 +290,8 @@ def evaluate_model(
         "metrics": metrics,
         "psd_test": psd_test,
         "psd_pred": psd_pred,
+        "lag1_test": lag1_test_spatial,
+        "lag1_pred": lag1_pred_spatial,
         **metrics,  # Include individual metrics for backward compatibility
     }
 
@@ -592,6 +599,18 @@ def main():
                 var_target=args.var_target,
                 domain=args.domain,
                 output_dir=output_dir,
+            )
+
+            # Plot lag-1 autocorrelation maps
+            plot_lag1_autocorr_maps(
+                model_name=model_name,
+                y_test=y_test,
+                y_pred=result["predictions"],
+                var_target=args.var_target,
+                domain=args.domain,
+                output_dir=output_dir,
+                lag1_test=result["lag1_test"],
+                lag1_pred=result["lag1_pred"],
             )
 
     # Save detailed results

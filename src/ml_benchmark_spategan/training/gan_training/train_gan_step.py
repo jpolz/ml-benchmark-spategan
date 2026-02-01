@@ -55,6 +55,7 @@ def _generate_ensemble(
     timesteps: torch.Tensor,
     ensemble_size: int,
     noise_std: float = 0.2,
+    learnable_noise_module: nn.Module = None,
 ) -> torch.Tensor:
     """
     Generate ensemble predictions efficiently.
@@ -67,12 +68,24 @@ def _generate_ensemble(
         orography: Orography input (B, 1, 128, 128)
         timesteps: Timesteps for diffusion models
         ensemble_size: Number of ensemble members
-        noise_std: Standard deviation of noise channel for diffusion models
+        noise_std: Standard deviation of noise channel for diffusion models (used if learnable_noise_module is None)
+        learnable_noise_module: Optional learnable noise scale module
 
     Returns:
         Ensemble predictions (B, ensemble_size, 128, 128)
     """
     batch_size = input_image.shape[0]
+
+    # Get noise scale (learnable or fixed)
+    if learnable_noise_module is not None:
+        noise_scale = learnable_noise_module()
+        # If spatial noise, it will be (1, 1, H, W), otherwise scalar
+        if noise_scale.dim() == 4:
+            # Spatial noise: broadcast will happen in add_noise_channel
+            pass
+        else:
+            # Global noise: convert to float
+            noise_std = noise_scale.item()
 
     # Pre-allocate output tensor for efficiency
     gen_ensemble = torch.empty(
@@ -95,7 +108,24 @@ def _generate_ensemble(
             input_with_oro = input_image_hr
         # Add DIFFERENT noise for each ensemble member
         for i in range(ensemble_size):
-            input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
+            if learnable_noise_module is not None and noise_scale.dim() == 4:
+                # Spatial noise: scale the random noise spatially
+                random_noise = torch.randn(
+                    batch_size,
+                    1,
+                    128,
+                    128,
+                    device=input_image.device,
+                    dtype=input_image.dtype,
+                )
+                scaled_noise = random_noise * noise_scale
+                input_with_noise = torch.cat([input_with_oro, scaled_noise], dim=1)
+            else:
+                # Global noise: use standard add_noise_channel
+                input_with_noise = add_noise_channel(
+                    input_with_oro, noise_std=noise_std
+                )
+
             gen_ensemble[:, i] = generator(input_with_noise, timesteps).view(
                 -1, 128, 128
             )
@@ -125,6 +155,7 @@ def train_gan_step(
     timesteps,
     loss_weights={"l1": 1.0, "gan": 1.0},
     condition_separate_channels: bool = False,
+    learnable_noise_module=None,
 ):
     """
     Performs a single training step for the GAN.
@@ -201,6 +232,7 @@ def train_gan_step(
                 timesteps=timesteps,
                 ensemble_size=config.training.ensemble_size,
                 noise_std=config.training.get("noise_std_gen", 0.0),
+                learnable_noise_module=learnable_noise_module,
             )
 
             # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)
@@ -330,6 +362,7 @@ def test_gan_step(
     timesteps,
     loss_weights={"l1": 1.0, "gan": 1.0},
     condition_separate_channels: bool = False,
+    learnable_noise_module=None,
 ):
     """
     Performs a single evaluation step for the GAN, computing all loss components.
@@ -398,6 +431,7 @@ def test_gan_step(
             timesteps=timesteps,
             ensemble_size=config.training.ensemble_size,
             noise_std=config.training.get("noise_std_gen", 0.0),
+            learnable_noise_module=learnable_noise_module,
         )
 
         # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)

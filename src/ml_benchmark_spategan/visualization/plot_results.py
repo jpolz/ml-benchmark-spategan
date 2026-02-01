@@ -635,3 +635,180 @@ def plot_multi_experiment_comparison(
     with open(stats_path, "w") as f:
         json.dump(spatial_stats, f, indent=2)
     print(f"Spatial statistics saved to {stats_path}")
+
+
+def plot_lag1_autocorr_maps(
+    model_name: str,
+    y_test: xr.Dataset,
+    y_pred: xr.Dataset,
+    var_target: str,
+    domain: str,
+    output_dir: Path,
+    lag1_test: xr.Dataset = None,
+    lag1_pred: xr.Dataset = None,
+):
+    """
+    Plot spatial maps of lag-1 autocorrelation.
+
+    Shows:
+    - Target lag-1 autocorrelation map
+    - Prediction lag-1 autocorrelation map
+    - Bias map (prediction - target)
+
+    Args:
+        model_name: Name of the model
+        y_test: Test target data
+        y_pred: Model predictions
+        var_target: Target variable name
+        domain: Domain name (SA, NZ, ALPS)
+        output_dir: Directory to save plot
+        lag1_test: Pre-computed lag-1 for test data (optional, computed if None)
+        lag1_pred: Pre-computed lag-1 for prediction (optional, computed if None)
+    """
+    # Compute lag-1 autocorrelation if not provided
+    if lag1_test is None or lag1_pred is None:
+        import sys
+        from pathlib import Path
+
+        # Add evaluation directory to path
+        sys.path.insert(
+            0, str(Path(__file__).parent.parent.parent.parent / "evaluation")
+        )
+        import indices
+
+        lag1_test = indices.lag1_corr(y_test, var_target)
+        lag1_pred = indices.lag1_corr(y_pred, var_target)
+
+    # Extract data arrays
+    lag1_test_da = lag1_test[var_target]
+    lag1_pred_da = lag1_pred[var_target]
+    lag1_bias = lag1_pred_da - lag1_test_da
+
+    # Setup projection
+    central_longitude = 180 if domain == "NZ" else 0
+    projection = ccrs.PlateCarree(central_longitude=central_longitude)
+
+    # Create figure with 1 row, 3 columns
+    fig = plt.figure(figsize=(18, 6))
+    gs = gridspec.GridSpec(1, 3, figure=fig, hspace=0.25, wspace=0.3)
+
+    # Common colormap for lag-1 autocorrelation (0 to 1 range typically)
+    lag1_cmap = "YlOrRd"
+    bias_cmap = "RdBu_r"
+
+    # Determine vmin/vmax
+    vmin_lag1 = min(lag1_test_da.min().values, lag1_pred_da.min().values)
+    vmax_lag1 = max(lag1_test_da.max().values, lag1_pred_da.max().values)
+
+    # Ensure lag-1 range includes typical values (0 to 1)
+    vmin_lag1 = max(0, vmin_lag1)  # Lag-1 typically non-negative
+    vmax_lag1 = min(1, vmax_lag1)  # Lag-1 typically <= 1
+
+    # Symmetric range for bias
+    bias_max = max(abs(lag1_bias.min().values), abs(lag1_bias.max().values))
+    bias_max = max(0.1, bias_max)  # Ensure minimum range for visualization
+
+    # Column 1: Target lag-1 autocorrelation
+    ax1 = fig.add_subplot(gs[0, 0], projection=projection)
+    im1 = lag1_test_da.plot(
+        ax=ax1,
+        transform=ccrs.PlateCarree(),
+        cmap=lag1_cmap,
+        vmin=vmin_lag1,
+        vmax=vmax_lag1,
+        add_colorbar=False,
+    )
+    ax1.coastlines()
+    ax1.set_title("Target Lag-1 Autocorrelation", fontsize=12, fontweight="bold")
+    cbar1 = plt.colorbar(
+        im1, ax=ax1, orientation="horizontal", pad=0.05, fraction=0.046
+    )
+    cbar1.set_label("Autocorrelation", fontsize=10)
+
+    # Add statistics text
+    mean_test = float(lag1_test_da.mean().values)
+    std_test = float(lag1_test_da.std().values)
+    ax1.text(
+        0.02,
+        0.98,
+        f"Mean: {mean_test:.3f}\nStd: {std_test:.3f}",
+        transform=ax1.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    # Column 2: Prediction lag-1 autocorrelation
+    ax2 = fig.add_subplot(gs[0, 1], projection=projection)
+    im2 = lag1_pred_da.plot(
+        ax=ax2,
+        transform=ccrs.PlateCarree(),
+        cmap=lag1_cmap,
+        vmin=vmin_lag1,
+        vmax=vmax_lag1,
+        add_colorbar=False,
+    )
+    ax2.coastlines()
+    ax2.set_title("Prediction Lag-1 Autocorrelation", fontsize=12, fontweight="bold")
+    cbar2 = plt.colorbar(
+        im2, ax=ax2, orientation="horizontal", pad=0.05, fraction=0.046
+    )
+    cbar2.set_label("Autocorrelation", fontsize=10)
+
+    # Add statistics text
+    mean_pred = float(lag1_pred_da.mean().values)
+    std_pred = float(lag1_pred_da.std().values)
+    ax2.text(
+        0.02,
+        0.98,
+        f"Mean: {mean_pred:.3f}\nStd: {std_pred:.3f}",
+        transform=ax2.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    # Column 3: Bias (Prediction - Target)
+    ax3 = fig.add_subplot(gs[0, 2], projection=projection)
+    im3 = lag1_bias.plot(
+        ax=ax3,
+        transform=ccrs.PlateCarree(),
+        cmap=bias_cmap,
+        vmin=-bias_max,
+        vmax=bias_max,
+        add_colorbar=False,
+    )
+    ax3.coastlines()
+    ax3.set_title("Lag-1 Autocorr Bias (Pred - Target)", fontsize=12, fontweight="bold")
+    cbar3 = plt.colorbar(
+        im3, ax=ax3, orientation="horizontal", pad=0.05, fraction=0.046
+    )
+    cbar3.set_label("Bias", fontsize=10)
+
+    # Add statistics text
+    mean_bias = float(lag1_bias.mean().values)
+    rmse_bias = float((lag1_bias**2).mean().values ** 0.5)
+    ax3.text(
+        0.02,
+        0.98,
+        f"Mean Bias: {mean_bias:.3f}\nRMSE: {rmse_bias:.3f}",
+        transform=ax3.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+    )
+
+    fig.suptitle(
+        f"Lag-1 Autocorrelation Spatial Patterns: {model_name} - {var_target}",
+        fontsize=14,
+        fontweight="bold",
+        y=1.02,
+    )
+
+    # Save plot
+    safe_model_name = model_name.replace("/", "_").replace(" ", "_")
+    output_path = output_dir / f"lag1_autocorr_maps_{safe_model_name}.png"
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print(f"Lag-1 autocorrelation maps saved to {output_path}")

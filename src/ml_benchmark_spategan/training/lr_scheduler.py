@@ -67,14 +67,20 @@ def create_warmup_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def setup_optimizers(cf, generator, discriminator, upsampler):
+def setup_optimizers(
+    cf, generator, discriminator, upsampler, learnable_noise_module=None
+):
     """Set up optimizers for generator and discriminator based on config."""
     # Optimizers
     if upsampler is not None:
         # Include upsampler parameters with generator
         gen_params = list(generator.parameters()) + list(upsampler.parameters())
     else:
-        gen_params = generator.parameters()
+        gen_params = list(generator.parameters())
+
+    # Add learnable noise module parameters if present
+    if learnable_noise_module is not None:
+        gen_params = gen_params + list(learnable_noise_module.parameters())
 
     if cf.training.generator.optimizer == "AdamW":
         gen_opt = torch.optim.AdamW(
@@ -147,9 +153,11 @@ def setup_optimizers(cf, generator, discriminator, upsampler):
 
     return gen_opt, disc_opt, gen_scheduler, disc_scheduler
 
+
 ###################################################################################
 # ONLY FOR VISUALIZATION AND DEBUGGING BELOW
 ###################################################################################
+
 
 def plot_lr_schedule(
     base_lr,

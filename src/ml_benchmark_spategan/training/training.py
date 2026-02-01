@@ -55,6 +55,10 @@ from tqdm import tqdm
 
 from ml_benchmark_spategan.config import config
 from ml_benchmark_spategan.dataloader import dataloader
+from ml_benchmark_spategan.model.learnable_noise import (
+    LearnableNoiseScale,
+    SpatialNoiseScale,
+)
 from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
 from ml_benchmark_spategan.training.gan_training import test_gan_step, train_gan_step
 from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
@@ -79,6 +83,59 @@ sys.path.insert(
 )
 import diagnostics
 import indices
+from model_selection_score import DEFAULT_WEIGHTS as SCORE_WEIGHTS
+
+
+def compute_model_selection_score(
+    diagnostics_dict: dict, weights: dict = None
+) -> float:
+    """
+    Compute the weighted composite model selection score from diagnostic metrics.
+
+    Lower scores indicate better models. This score is used to determine the
+    best model checkpoint during training.
+
+    Args:
+        diagnostics_dict: Dictionary of diagnostic metrics (single epoch, not history)
+        weights: Optional custom weights dict. Uses DEFAULT_WEIGHTS if None.
+
+    Returns:
+        Composite score (lower is better)
+    """
+    if weights is None:
+        weights = SCORE_WEIGHTS
+
+    total_weight = 0.0
+    weighted_sum = 0.0
+
+    for metric_name, weight in weights.items():
+        if metric_name not in diagnostics_dict:
+            continue
+
+        value = diagnostics_dict[metric_name]
+
+        # Skip NaN values or non-numeric
+        if not isinstance(value, (int, float)) or np.isnan(value):
+            continue
+
+        # Metrics where ideal value is 1.0
+        if metric_name in ["std_ratio", "correlation", "anomaly_correlation"]:
+            value = abs(value - 1.0)
+        else:
+            # For metrics where higher is better (negative weight), negate first
+            if weight < 0:
+                value = -value
+            # Then take absolute value so all contributions are positive
+            value = abs(value)
+
+        # Apply weight
+        weighted_value = abs(weight) * value
+        weighted_sum += weighted_value
+        total_weight += abs(weight)
+
+    if total_weight > 0:
+        return weighted_sum / total_weight
+    return float("inf")
 
 
 def sinusoidal_encoding_doy(doy: torch.Tensor, normalize: bool = True) -> torch.Tensor:
@@ -409,6 +466,37 @@ def main():
     generator = create_generator(cf, device)
     discriminator = create_discriminator(cf, device)
 
+    # Create learnable noise module if enabled
+    learnable_noise_module = None
+    if cf.training.get("noise_learnable", False):
+        noise_type = cf.training.get("noise_type", "global")  # "global" or "spatial"
+        noise_init = cf.training.get(
+            "noise_init", cf.training.get("noise_std_gen", 0.05)
+        )
+        noise_min = cf.training.get("noise_min", 0.0)
+        noise_max = cf.training.get("noise_max", 1.0)
+
+        if noise_type == "spatial":
+            learnable_noise_module = SpatialNoiseScale(
+                height=128,
+                width=128,
+                init_value=noise_init,
+                min_value=noise_min,
+                max_value=noise_max,
+            ).to(device)
+            logger.info(
+                f"Using learnable spatial noise (init={noise_init}, range=[{noise_min}, {noise_max}])"
+            )
+        else:
+            learnable_noise_module = LearnableNoiseScale(
+                init_value=noise_init, min_value=noise_min, max_value=noise_max
+            ).to(device)
+            logger.info(
+                f"Using learnable global noise (init={noise_init}, range=[{noise_min}, {noise_max}])"
+            )
+    else:
+        logger.info(f"Using fixed noise scale: {cf.training.get('noise_std_gen', 0.0)}")
+
     # Set conditioning flag based on discriminator architecture
     condition_separate_channels = cf.model.discriminator_architecture != "unet"
 
@@ -443,7 +531,7 @@ def main():
 
     # Optimizers and schedulers
     gen_opt, disc_opt, gen_scheduler, disc_scheduler = setup_optimizers(
-        cf, generator, discriminator, upsampler
+        cf, generator, discriminator, upsampler, learnable_noise_module
     )
 
     # For mixed precision training
@@ -492,11 +580,17 @@ def main():
         "cdd_bias": [],
         "cwd_bias": [],
         "epochs": [],
+        # Model selection score (composite weighted score)
+        "model_score": [],
     }
 
     # Track best validation loss
     best_val_loss = float("inf")
     best_val_epoch = 0
+
+    # Track best model selection score (lower is better)
+    best_model_score = float("inf")
+    best_model_epoch = 0
 
     logger.info(f"Starting GAN training for {cf.training.epochs} epochs...")
 
@@ -623,6 +717,7 @@ def main():
                     loss_weights=cf.training.loss_weights,
                     condition_separate_channels=condition_separate_channels,
                     fss_criterion=fss_criterion,
+                    learnable_noise_module=learnable_noise_module,
                 )
                 disc_losses_batch.append(disc_loss)
 
@@ -644,6 +739,7 @@ def main():
                 loss_weights=cf.training.loss_weights,
                 condition_separate_channels=condition_separate_channels,
                 fss_criterion=fss_criterion,
+                learnable_noise_module=learnable_noise_module,
             )
 
             epoch_gen_losses.append(gen_loss)
@@ -720,6 +816,7 @@ def main():
                     timesteps=timesteps,
                     loss_weights=cf.training.loss_weights,
                     condition_separate_channels=condition_separate_channels,
+                    learnable_noise_module=learnable_noise_module,
                 )
                 batch_loss_dicts.append(loss_dict)
 
@@ -902,6 +999,7 @@ def main():
                             timesteps=timesteps,
                             ensemble_size=ensemble_size,
                             noise_std=cf.training.get("noise_std_gen", 0.0),
+                            learnable_noise_module=learnable_noise_module,
                         )
 
                         # Use ensemble mean as the single prediction
@@ -942,6 +1040,46 @@ def main():
                     if key not in diagnostic_history:
                         diagnostic_history[key] = []
                     diagnostic_history[key].append(value)
+
+            # Compute model selection score
+            model_score = compute_model_selection_score(diag_results)
+            diagnostic_history["model_score"].append(model_score)
+            logger.info(f"  Model Selection Score: {model_score:.4f} (lower is better)")
+
+            # Save best model checkpoint if score improved
+            if model_score < best_model_score:
+                best_model_score = model_score
+                best_model_epoch = epoch + 1
+                logger.info(
+                    f"  New best model! Score: {model_score:.4f} at epoch {best_model_epoch}"
+                )
+
+                # Save best model checkpoint (overwrite previous)
+                best_checkpoint_dict = {
+                    "epoch": epoch + 1,
+                    "model_score": model_score,
+                    "generator_state_dict": generator.state_dict(),
+                    "discriminator_state_dict": discriminator.state_dict(),
+                    "gen_optimizer_state_dict": gen_opt.state_dict(),
+                    "disc_optimizer_state_dict": disc_opt.state_dict(),
+                    "gen_scheduler_state_dict": gen_scheduler.state_dict(),
+                    "disc_scheduler_state_dict": disc_scheduler.state_dict(),
+                    "diagnostic_history": diagnostic_history,
+                    "diagnostics": diag_results,
+                }
+                if upsampler is not None:
+                    best_checkpoint_dict["upsampler_state_dict"] = (
+                        upsampler.state_dict()
+                    )
+                if learnable_noise_module is not None:
+                    best_checkpoint_dict["learnable_noise_state_dict"] = (
+                        learnable_noise_module.state_dict()
+                    )
+                torch.save(
+                    best_checkpoint_dict,
+                    f"{cf.logging.run_dir}/checkpoints/best_model.pt",
+                )
+                logger.info("  Best model checkpoint saved")
 
             # Save diagnostic history to JSON file (independent of checkpoints)
             diagnostic_history_path = os.path.join(
@@ -1030,6 +1168,8 @@ def main():
         "diagnostic_history": diagnostic_history,
         "best_val_loss": best_val_loss,
         "best_val_epoch": best_val_epoch,
+        "best_model_score": best_model_score,
+        "best_model_epoch": best_model_epoch,
     }
     if upsampler is not None:
         checkpoint_dict["upsampler_state_dict"] = upsampler.state_dict()
@@ -1041,6 +1181,12 @@ def main():
     logger.info("\nTraining complete!")
     logger.info(
         f"Best validation L1 loss: {best_val_loss:.6f} at epoch {best_val_epoch}"
+    )
+    logger.info(
+        f"Best model selection score: {best_model_score:.4f} at epoch {best_model_epoch}"
+    )
+    logger.info(
+        f"Best model checkpoint saved to: {cf.logging.run_dir}/checkpoints/best_model.pt"
     )
 
     logger.info(f"\nGAN training complete! Models saved to {cf.logging.run_dir}")

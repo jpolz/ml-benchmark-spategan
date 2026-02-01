@@ -23,7 +23,7 @@ cd $SLURM_SUBMIT_DIR
 # Configuration
 DOMAIN="SA"
 # VAR_TARGET="tasmax" # tasmax or pr
-VAR_TARGET="tasmax" # tasmax or pr
+VAR_TARGET="pr" # tasmax or pr
 EXPERIMENT="ESD_pseudo_reality"
 DATA_PATH="/bg/fast/aihydromet/cordexbench/"
 DEEPESD_MODEL="./training/models/model.pt"
@@ -37,20 +37,25 @@ GAN_RUNS=(
     # "./runs/20260106_2224_9jkutucc" # Unet SA tasmax with orography
     # "./runs/20260106_2224_8z16kjik" # Unet SA tasmax no orography
     # "./runs/20260106_2224_9jkutucc" # Unet SA tasmax with orography
-    "./runs/20260106_2224_8z16kjik" # Unet SA tasmax no orography λ_disc=0
-    "./runs/20260107_2332_dvpmoltj" # Unet SA tasmax with orography λ_disc=0.05
-    "./runs/20260107_2332_brjuhfpr" # Unet SA tasmax no orography λ_disc=0.001
-    "./runs/20260108_2252_hzg78mh0" # Unet SA tasmax no orography λ_disc=0.0001
-
+    # "./runs/20260106_2224_8z16kjik" # Unet SA tasmax no orography λ_disc=0
+    # "./runs/20260107_2332_dvpmoltj" # Unet SA tasmax with orography λ_disc=0.05
+    # "./runs/20260107_2332_brjuhfpr" # Unet SA tasmax no orography λ_disc=0.001
+    # "./runs/20260108_2252_hzg78mh0" # Unet SA tasmax no orography λ_disc=0.0001
+    "./runs/20260127_0055_ziiiiwtb" # Unet SA pr no orography ?
+    "./runs/20260127_0055_yo8vkxo6" # Unet SA pr no orography ?
+    "./runs/20260127_0055_vf4l3lwh" # Unet SA pr no orography ?
 )
 
 # Optional: Checkpoint epochs to load (one per run, or leave empty for final models)
 # If specified, must have same length as GAN_RUNS
 CHECKPOINT_EPOCHS=(
-    150
-    150
-    150
-    150
+    # 150
+    # 150
+    # 150
+    # 150
+    80
+    80
+    80
 )
 
 # Build the command
