@@ -285,14 +285,12 @@ def plot_predictions(
                 y_pred = generator(x)
             case "diffusion_unet":
                 y_pred = generator(x, torch.zeros([1]).to(device))
-            case "deepesd":
-                y_pred = generator(x)
             case _:
                 raise ValueError(f"Invalid option: {cf.model.architecture}")
 
     # Denormalize if norm_params provided
     if norm_params is not None:
-        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
+        from ml_benchmark_spategan.train.normalize import denormalize_predictions
 
         y = denormalize_predictions(y, norm_params)
         y_pred = denormalize_predictions(y_pred, norm_params)
@@ -527,14 +525,12 @@ def plot_predictions_only(
             case "diffusion_unet":
                 timesteps = torch.zeros([num_samples]).to(device)
                 y_pred = generator(x, timesteps)
-            case "deepesd":
-                y_pred = generator(x)
             case _:
                 raise ValueError(f"Invalid option: {cf.model.architecture}")
 
     # Denormalize if norm_params provided
     if norm_params is not None:
-        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
+        from ml_benchmark_spategan.train.normalize import denormalize_predictions
 
         y = denormalize_predictions(y, norm_params)
         y_pred = denormalize_predictions(y_pred, norm_params)

@@ -9,8 +9,7 @@ def load_model(model_type: str, **kwargs):
 
     Args:
         model_type: Type of model ('deepesd', 'gan')
-        **kwargs: Model-specific arguments
-            - For 'deepesd': model_path, x_shape, y_shape, filters_last_conv, device
+        **kwargs: Model-specific arguments:
             - For 'gan': run_dir, config, checkpoint_epoch, device, orography
 
     Returns:
@@ -21,12 +20,6 @@ def load_model(model_type: str, **kwargs):
         is automatically selected based on the config architecture.
 
     Example:
-        >>> # Load DeepESD model
-        >>> model = load_model('deepesd',
-        ...                    model_path='path/to/model.pt',
-        ...                    x_shape=(1, 15, 16, 16),
-        ...                    y_shape=(1, 16384))
-        >>>
         >>> # Load GAN model (auto-detects SpaGAN vs UNet)
         >>> model = load_model('gan',
         ...                    run_dir='runs/20251218_0211_zjh10zws',
@@ -36,18 +29,7 @@ def load_model(model_type: str, **kwargs):
         "device", torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
 
-    if model_type.lower() == "deepesd":
-        from ml_benchmark_spategan.model.generators.deepesd import DeepESDWrapper
-
-        return DeepESDWrapper(
-            model_path=kwargs["model_path"],
-            x_shape=kwargs["x_shape"],
-            y_shape=kwargs["y_shape"],
-            filters_last_conv=kwargs.get("filters_last_conv", 1),
-            device=device,
-        )
-
-    elif model_type.lower() == "gan":
+    if model_type.lower() == "gan":
         config = kwargs["config"]
 
         # Determine architecture to select appropriate wrapper
@@ -56,7 +38,9 @@ def load_model(model_type: str, **kwargs):
         )
 
         if arch == "spategan":
-            from ml_benchmark_spategan.model.generators.spategan import SpaGANWrapper
+            from ml_benchmark_spategan.train.model.generators.spategan import (
+                SpaGANWrapper,
+            )
 
             return SpaGANWrapper(
                 run_dir=kwargs["run_dir"],
@@ -66,7 +50,7 @@ def load_model(model_type: str, **kwargs):
             )
 
         elif arch == "diffusion_unet":
-            from ml_benchmark_spategan.model.generators.unet2d import UNetWrapper
+            from ml_benchmark_spategan.train.model.generators.unet2d import UNetWrapper
 
             return UNetWrapper(
                 run_dir=kwargs["run_dir"],
@@ -83,6 +67,4 @@ def load_model(model_type: str, **kwargs):
             )
 
     else:
-        raise ValueError(
-            f"Unknown model type: {model_type}. Supported types: 'deepesd', 'gan'"
-        )
+        raise ValueError(f"Unknown model type: {model_type}. Supported types: 'gan'")

@@ -5,8 +5,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from ml_benchmark_spategan.model.base import BaseModel, BaseWrapper
-from ml_benchmark_spategan.model.layers import CustomDropout, ResidualBlock2D
+from ml_benchmark_spategan.train.model.base import BaseModel, BaseWrapper
+from ml_benchmark_spategan.train.model.layers import CustomDropout, ResidualBlock2D
 
 ###########################################################################
 ### SUPPORTING LAYERS
@@ -205,13 +205,15 @@ class SpaGANWrapper(BaseWrapper):
         self,
         run_dir: str,
         config,
-        checkpoint_epoch: Optional[int] = None,
+        checkpoint_epoch: Optional[int | str] = None,
         device: Optional[torch.device] = None,
     ):
         from pathlib import Path
 
         # Determine checkpoint name based on epoch
-        if checkpoint_epoch is not None:
+        if checkpoint_epoch == "best":
+            checkpoint_name = "checkpoints/best_model.pt"
+        elif checkpoint_epoch is not None:
             checkpoint_name = f"checkpoints/checkpoint_epoch_{checkpoint_epoch}.pt"
         else:
             checkpoint_name = "checkpoints/final_models.pt"
@@ -273,7 +275,7 @@ class SpaGANWrapper(BaseWrapper):
         Returns:
             Denormalized predictions (B, 1, 128, 128)
         """
-        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
+        from ml_benchmark_spategan.train.normalize import denormalize_predictions
 
         x = x.to(self.device)
 

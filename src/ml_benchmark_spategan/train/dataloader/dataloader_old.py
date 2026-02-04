@@ -67,7 +67,7 @@ def temporal_collate_fn(batch):
         return x_batch, y_batch
 
 
-from ..utils.normalize import normalize_predictors
+from ml_benchmark_spategan.train.normalize import normalize_predictors
 
 
 def load_cordex_data(
@@ -191,7 +191,7 @@ def upscale_nn(x):
 def add_noise_channel(x):
     """Add noise channel. Wrapper for utils.interpolate.add_noise_channel."""
     # x: (B, 15, 128, 128)
-    from ml_benchmark_spategan.utils.interpolate import add_noise_channel as _add_noise
+    from ml_benchmark_spategan.train.interpolate import add_noise_channel as _add_noise
 
     return _add_noise(x, noise_std=0.2)
 

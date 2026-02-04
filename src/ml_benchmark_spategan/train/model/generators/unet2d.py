@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from diffusers import UNet2DModel
 
-from ml_benchmark_spategan.model.base import BaseModel, BaseWrapper
+from ml_benchmark_spategan.train.model.base import BaseModel, BaseWrapper
 
 
 class UNetWithActivation(BaseModel):
@@ -150,12 +150,14 @@ class UNetWrapper(BaseWrapper):
         self,
         run_dir: str,
         config,
-        checkpoint_epoch: Optional[int] = None,
+        checkpoint_epoch: Optional[int | str] = None,
         device: Optional[torch.device] = None,
         orography: Optional[torch.Tensor] = None,
     ):
         # Determine checkpoint name based on epoch
-        if checkpoint_epoch is not None:
+        if checkpoint_epoch == "best":
+            checkpoint_name = "checkpoints/best_model.pt"
+        elif checkpoint_epoch is not None:
             checkpoint_name = f"checkpoints/checkpoint_epoch_{checkpoint_epoch}.pt"
         else:
             checkpoint_name = "checkpoints/final_models.pt"
@@ -178,7 +180,6 @@ class UNetWrapper(BaseWrapper):
 
     def _load_model(self):
         """Load UNet generator architecture and weights."""
-        from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
 
         # Check if this is temporal (3D) or standard (2D) UNet
         t_past = getattr(self.config.data, "t_past", 0)
@@ -186,7 +187,7 @@ class UNetWrapper(BaseWrapper):
         is_temporal = (t_past > 0) or (t_future > 0)
 
         if is_temporal:
-            from ml_benchmark_spategan.model.generators.unet3d import (
+            from ml_benchmark_spategan.train.model.generators.unet3d import (
                 create_unet3d_generator,
             )
 
@@ -217,16 +218,6 @@ class UNetWrapper(BaseWrapper):
         self.model.to(self.device)
         self.model.eval()
 
-        # Load upsampler if it exists in checkpoint
-        if "upsampler_state_dict" in checkpoint:
-            # Recreate the upsampler architecture with correct number of input channels
-            n_input_channels = self.config.model.get("n_input_channels", 15)
-            self.upsampler = LearnableUpsampler(in_channels=n_input_channels).to(
-                self.device
-            )
-            self.upsampler.load_state_dict(checkpoint["upsampler_state_dict"])
-            self.upsampler.eval()
-
         if self.checkpoint_epoch is None:
             self.checkpoint_epoch = checkpoint.get("epoch", None)
 
@@ -247,11 +238,11 @@ class UNetWrapper(BaseWrapper):
         Returns:
             Denormalized predictions (B, 1, 128, 128)
         """
-        from ml_benchmark_spategan.utils.interpolate import (
+        from ml_benchmark_spategan.train.interpolate import (
             add_noise_channel,
             upscale_bilinear,
         )
-        from ml_benchmark_spategan.utils.normalize import denormalize_predictions
+        from ml_benchmark_spategan.train.normalize import denormalize_predictions
 
         x = x.to(self.device)
 

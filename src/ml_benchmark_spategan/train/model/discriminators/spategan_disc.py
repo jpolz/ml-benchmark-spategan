@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from ml_benchmark_spategan.model.layers import ResidualBlock2D
+from ml_benchmark_spategan.train.model.layers import ResidualBlock2D
 
 ###########################################################################
 ### DISCRIMINATOR

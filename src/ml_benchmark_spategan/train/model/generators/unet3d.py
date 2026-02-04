@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from diffusers import UNet2DModel
 
-from ml_benchmark_spategan.model.base import BaseModel
+from ml_benchmark_spategan.train.model.base import BaseModel
 
 
 class UNet3DWithActivation(BaseModel):

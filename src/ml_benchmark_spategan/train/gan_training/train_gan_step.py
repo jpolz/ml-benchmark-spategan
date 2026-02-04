@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 from torch import amp
 
-from ml_benchmark_spategan.training.gan_training.losses import GANLossManager
-from ml_benchmark_spategan.utils.interpolate import add_noise_channel
+from ml_benchmark_spategan.train.gan_training.losses import GANLossManager
+from ml_benchmark_spategan.train.interpolate import add_noise_channel
 
 
 def compute_gradient_penalty_r1(
@@ -129,9 +129,6 @@ def _generate_ensemble(
             gen_ensemble[:, i] = generator(input_with_noise, timesteps).view(
                 -1, 128, 128
             )
-    elif architecture == "deepesd":
-        for i in range(ensemble_size):
-            gen_ensemble[:, i] = generator(input_image).view(-1, 128, 128)
     else:
         raise ValueError(f"Invalid architecture: {architecture}")
 
@@ -286,8 +283,6 @@ def train_gan_step(
                     ),
                     timesteps,
                 ).view(-1, 1, 128, 128)
-            elif config.model.architecture == "deepesd":
-                pred_log = generator(input_image).view(-1, 1, 128, 128)
             else:
                 raise ValueError(f"Invalid architecture: {config.model.architecture}")
 

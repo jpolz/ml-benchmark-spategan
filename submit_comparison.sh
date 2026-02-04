@@ -26,8 +26,6 @@ DOMAIN="SA"
 VAR_TARGET="pr" # tasmax or pr
 EXPERIMENT="ESD_pseudo_reality"
 DATA_PATH="/bg/fast/aihydromet/cordexbench/"
-DEEPESD_MODEL="./training/models/model.pt"
-# DEEPESD_MODEL="./training/models/DeepESD_pr_NZ.pt"
 OUTPUT_DIR="./analysis/results/comparison_$(date +%Y%m%d_%H%M)"
 
 # GAN runs to compare (modify this list as needed)
@@ -65,11 +63,6 @@ CMD=".venv/bin/python -m ml_benchmark_spategan.analysis.compare_models \
     --experiment $EXPERIMENT \
     --data-path $DATA_PATH \
     --output-dir $OUTPUT_DIR"
-
-# Add DeepESD model if it exists
-if [ -f "$DEEPESD_MODEL" ]; then
-    CMD="$CMD --deepesd-model $DEEPESD_MODEL"
-fi
 
 # Add GAN runs (validate that directories exist first)
 VALID_RUNS=()

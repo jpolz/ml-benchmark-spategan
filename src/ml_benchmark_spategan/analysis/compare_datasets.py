@@ -19,7 +19,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "evaluation"))
 import diagnostics
 
-from ml_benchmark_spategan.dataloader.dataloader import (
+from ml_benchmark_spategan.train.dataloader.dataloader_old import (
     load_cordex_data,
     split_train_test,
 )

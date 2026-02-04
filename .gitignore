@@ -10,8 +10,11 @@ format_predictions/generate_templates.py
 
 runs/
 logs/
+results/
+archive/
 runs_summary.md
 analysis/results/
+analysis/dataset_comparison/
 .vscode/
 tmp_cfg/
 comparison_scripts/compare_runs_SA*

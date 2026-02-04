@@ -12,4 +12,4 @@ RUNS=(
 
 # Run the comparison script
 # Output will be saved as PNG file
-.venv/bin/python training/compare_diagnostics.py "${RUNS[@]}" --output comparison_output.png
+.venv/bin/python analysis/compare_diagnostics.py "${RUNS[@]}" --output comparison_output.png

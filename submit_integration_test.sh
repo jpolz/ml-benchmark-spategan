@@ -36,7 +36,7 @@ echo ""
 
 # Run training and capture both stdout and stderr
 TRAIN_LOG="logs/integration_test_training_${SLURM_JOB_ID}.log"
-.venv/bin/python -m ml_benchmark_spategan.training.training --config $CONFIG_FILE 2>&1 | tee $TRAIN_LOG
+.venv/bin/python -m ml_benchmark_spategan.train.training --config $CONFIG_FILE 2>&1 | tee $TRAIN_LOG
 
 # Check if training succeeded
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
@@ -67,15 +67,15 @@ echo ""
 sleep 5
 
 echo "======================================================================"
-echo "STEP 2: Running comparison (without DeepESD)"
+echo "STEP 2: Running comparison"
 echo "======================================================================"
 echo ""
 
 # Set up comparison output directory
 OUTPUT_DIR="./analysis/results/integration_test_$(date +%Y%m%d_%H%M)"
 
-# Build the comparison command without DeepESD
-CMD=".venv/bin/python -m ml_benchmark_spategan.analysis.compare_models \
+# Build the comparison command
+CMD=".venv/bin/python -m ml_benchmark_spategan.evaluate.compare_models \
     --domain $DOMAIN \
     --var-target $VAR_TARGET \
     --experiment $EXPERIMENT \
@@ -90,7 +90,6 @@ echo "  Variable: $VAR_TARGET"
 echo "  Experiment: $EXPERIMENT"
 echo "  Output directory: $OUTPUT_DIR"
 echo "  GAN run: $RUN_DIR"
-echo "  DeepESD: Not included (integration test)"
 echo ""
 echo "Command: $CMD"
 echo ""

@@ -22,7 +22,7 @@ def create_generator(config, device: torch.device = None):
     )
 
     if architecture == "spategan":
-        from ml_benchmark_spategan.model.generators.spategan import Generator
+        from ml_benchmark_spategan.train.model.generators.spategan import Generator
 
         generator = Generator(config.model).to(device)
 
@@ -38,7 +38,7 @@ def create_generator(config, device: torch.device = None):
         is_temporal = (t_past > 0) or (t_future > 0)
 
         if is_temporal:
-            from ml_benchmark_spategan.model.generators.unet3d import (
+            from ml_benchmark_spategan.train.model.generators.unet3d import (
                 create_unet3d_generator,
             )
 
@@ -73,7 +73,7 @@ def create_generator(config, device: torch.device = None):
                 )
             )
         else:
-            from ml_benchmark_spategan.model.generators.unet2d import (
+            from ml_benchmark_spategan.train.model.generators.unet2d import (
                 create_unet_generator,
             )
 
@@ -101,21 +101,6 @@ def create_generator(config, device: torch.device = None):
 
         return generator
 
-    elif architecture == "deepesd":
-        from ml_benchmark_spategan.model.generators.deepesd import DeepESD
-
-        deepesd_cfg = config.model.generator.deepesd
-        generator = DeepESD(
-            x_shape=deepesd_cfg.x_shape,
-            y_shape=deepesd_cfg.y_shape,
-            filters_last_conv=deepesd_cfg.filters_last_conv,
-        ).to(device)
-
-        print("Generator architecture:")
-        print(summary(generator, input_size=(1, 15, 16, 16), verbose=0))
-
-        return generator
-
     else:
         raise ValueError(f"Unknown generator architecture: {architecture}")
 
@@ -133,7 +118,9 @@ def create_discriminator(config, device: torch.device = None):
     """
     from diffusers import UNet2DModel
 
-    from ml_benchmark_spategan.model.discriminators.spategan_disc import Discriminator
+    from ml_benchmark_spategan.train.model.discriminators.spategan_disc import (
+        Discriminator,
+    )
 
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

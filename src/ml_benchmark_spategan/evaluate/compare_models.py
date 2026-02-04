@@ -14,18 +14,18 @@ from torch.utils.data import DataLoader
 from ml_benchmark_spategan.analysis.data_utils import prepare_torch_data
 from ml_benchmark_spategan.analysis.model_loader import load_model
 from ml_benchmark_spategan.config import config
-from ml_benchmark_spategan.dataloader.dataloader import (
+from ml_benchmark_spategan.evaluate.visualization.plot_results import (
+    plot_lag1_autocorr_maps,
+    plot_prediction_comparison,
+    plot_psd_comparison,
+)
+from ml_benchmark_spategan.train.dataloader.dataloader_old import (
     EmulationTestDataset,
     load_cordex_data,
     load_orography,
     split_train_test,
 )
-from ml_benchmark_spategan.utils.normalize import normalize_predictors
-from ml_benchmark_spategan.visualization.plot_results import (
-    plot_lag1_autocorr_maps,
-    plot_prediction_comparison,
-    plot_psd_comparison,
-)
+from ml_benchmark_spategan.train.normalize import normalize_predictors
 
 # Add evaluation directory to path to import diagnostics
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "evaluation"))
@@ -296,6 +296,249 @@ def evaluate_model(
     }
 
 
+def evaluate_stored_predictions(
+    predictions_path: Path,
+    y_test: xr.Dataset,
+    y_train: xr.Dataset,
+    var_target: str,
+    domain: str,
+    model_name: str = "StoredPredictions",
+) -> dict:
+    """
+    Evaluate stored predictions from a NetCDF file.
+
+    This function loads pre-computed predictions and evaluates them against
+    the test data. Supports both single predictions and ensemble predictions.
+
+    Args:
+        predictions_path: Path to NetCDF file with predictions
+        y_test: Test target data (xarray)
+        y_train: Training target data (xarray) for climatology
+        var_target: Target variable name
+        domain: Domain name
+        model_name: Name for logging
+
+    Returns:
+        Dictionary with predictions and metrics (same format as evaluate_model)
+    """
+    print(f"\n=== Evaluating Stored Predictions: {model_name} ===")
+    print(f"  Loading from: {predictions_path}")
+
+    # Load stored predictions
+    ds_pred = xr.open_dataset(predictions_path)
+
+    # Check if we have ensemble dimension
+    has_ensemble = "member" in ds_pred.dims
+    if has_ensemble:
+        print(f"  Ensemble predictions with {ds_pred.dims['member']} members")
+        # Use ensemble mean for evaluation
+        y_pred_values = ds_pred[var_target].mean(dim="member")
+    else:
+        print("  Single deterministic prediction")
+        y_pred_values = ds_pred[var_target]
+
+    # Align time coordinates
+    common_times = np.intersect1d(y_test.time.values, ds_pred.time.values)
+    if len(common_times) < len(y_test.time):
+        print(f"  Warning: Only {len(common_times)}/{len(y_test.time)} times match")
+
+    # Select common times
+    y_test_aligned = y_test.sel(time=common_times)
+
+    # Get prediction values (average ensemble if needed)
+    if has_ensemble:
+        pred_values = ds_pred[var_target].sel(time=common_times).mean(dim="member")
+    else:
+        pred_values = ds_pred[var_target].sel(time=common_times)
+
+    # Determine spatial dimensions to ensure coordinate compatibility
+    if domain == "ALPS":
+        spatial_dims = ("x", "y")
+    elif domain in ["NZ", "SA"]:
+        spatial_dims = ("lat", "lon")
+    else:
+        raise ValueError(f"Invalid domain: {domain}")
+
+    # Ensure prediction values have matching coordinate names as test data
+    # This handles cases where prediction files might use different coordinate names
+    test_coords = list(y_test_aligned[var_target].dims)
+    pred_dims = list(pred_values.dims)
+
+    if set(pred_dims) != set(test_coords):
+        # Rename coordinates in prediction to match test data
+        dim_mapping = {}
+        for test_dim in test_coords:
+            if test_dim not in pred_dims:
+                # Find corresponding dimension by checking if it's spatial
+                for pred_dim in pred_dims:
+                    if (
+                        pred_dim not in ["time", "member"]
+                        and pred_dim not in dim_mapping.values()
+                    ):
+                        dim_mapping[pred_dim] = test_dim
+                        break
+        if dim_mapping:
+            pred_values = pred_values.rename(dim_mapping)
+
+    # Create prediction dataset with same structure as y_test
+    y_pred_aligned = y_test_aligned.copy(deep=True)
+    y_pred_aligned[var_target] = pred_values
+
+    # Calculate metrics (same as evaluate_model)
+    metrics = {}
+
+    # RMSE
+    rmse = diagnostics.rmse(
+        x0=y_test_aligned, x1=y_pred_aligned, var=var_target, dim="time"
+    )
+    metrics["mean_rmse"] = float(rmse[var_target].mean().values.item())
+
+    # Bias (mean error)
+    bias = (y_pred_aligned[var_target] - y_test_aligned[var_target]).mean(dim="time")
+    metrics["mean_bias"] = float(bias.mean().values.item())
+
+    # MAE (Mean Absolute Error)
+    mae = np.abs(y_pred_aligned[var_target] - y_test_aligned[var_target]).mean(
+        dim="time"
+    )
+    metrics["mean_mae"] = float(mae.mean().values.item())
+
+    # Correlation
+    corr = xr.corr(y_pred_aligned[var_target], y_test_aligned[var_target], dim="time")
+    metrics["mean_correlation"] = float(corr.mean().values.item())
+
+    # Anomaly Correlation
+    y_train_clim = y_train[var_target].mean(dim="time")
+    y_test_anom = y_test_aligned[var_target] - y_train_clim
+    y_pred_anom = y_pred_aligned[var_target] - y_train_clim
+    anom_corr = xr.corr(y_pred_anom, y_test_anom, dim=spatial_dims)
+    metrics["mean_anomaly_correlation"] = float(anom_corr.mean().values.item())
+
+    # Quantiles
+    q95_pred = y_pred_aligned[var_target].quantile(0.95, dim="time")
+    q95_test = y_test_aligned[var_target].quantile(0.95, dim="time")
+    metrics["q95_bias"] = float((q95_pred - q95_test).mean().values.item())
+
+    q98_pred = y_pred_aligned[var_target].quantile(0.98, dim="time")
+    q98_test = y_test_aligned[var_target].quantile(0.98, dim="time")
+    metrics["q98_bias"] = float((q98_pred - q98_test).mean().values.item())
+
+    # Standard deviation ratio
+    std_pred = y_pred_aligned[var_target].std(dim="time")
+    std_test = y_test_aligned[var_target].std(dim="time")
+    metrics["std_ratio"] = float((std_pred / std_test).mean().values.item())
+
+    # Power Spectral Density
+    psd_test, psd_pred = diagnostics.psd(
+        x0=y_test_aligned, x1=y_pred_aligned, var=var_target
+    )
+    metrics["psd_score"] = compute_psd_score(psd_test, psd_pred)
+
+    # Variable-specific indices
+    if var_target == "tasmax":
+        su_test = indices.su(y_test_aligned, var_target, threshold=298.15)
+        su_pred = indices.su(y_pred_aligned, var_target, threshold=298.15)
+        metrics["su_bias"] = float(
+            (su_pred[var_target] - su_test[var_target]).mean().values.item()
+        )
+
+        txx_test = indices.txx(y_test_aligned, var_target)
+        txx_pred = indices.txx(y_pred_aligned, var_target)
+        metrics["txx_bias"] = float(
+            (txx_pred[var_target] - txx_test[var_target]).mean().values.item()
+        )
+
+        txn_test = indices.txn(y_test_aligned, var_target)
+        txn_pred = indices.txn(y_pred_aligned, var_target)
+        metrics["txn_bias"] = float(
+            (txn_pred[var_target] - txn_test[var_target]).mean().values.item()
+        )
+
+        print(f"Summer Days Bias: {metrics['su_bias']:.4f}")
+        print(f"TXx (Annual Max) Bias: {metrics['txx_bias']:.4f}")
+        print(f"TXn (Annual Min) Bias: {metrics['txn_bias']:.4f}")
+
+    elif var_target == "pr":
+        rx1day_test = indices.rx1day(y_test_aligned, var_target)
+        rx1day_pred = indices.rx1day(y_pred_aligned, var_target)
+        metrics["rx1day_bias"] = float(
+            (rx1day_pred[var_target] - rx1day_test[var_target]).mean().values.item()
+        )
+
+        sdii_test = indices.sdii(y_test_aligned, var_target, wet_threshold=1.0)
+        sdii_pred = indices.sdii(y_pred_aligned, var_target, wet_threshold=1.0)
+        metrics["sdii_bias"] = float(
+            (sdii_pred[var_target] - sdii_test[var_target]).mean().values.item()
+        )
+
+        cdd_test = indices.cdd(y_test_aligned, var_target, dry_threshold=1.0)
+        cdd_pred = indices.cdd(y_pred_aligned, var_target, dry_threshold=1.0)
+        metrics["cdd_bias"] = float(
+            (cdd_pred[var_target] - cdd_test[var_target]).mean().values.item()
+        )
+
+        cwd_test = indices.cwd(y_test_aligned, var_target, wet_threshold=1.0)
+        cwd_pred = indices.cwd(y_pred_aligned, var_target, wet_threshold=1.0)
+        metrics["cwd_bias"] = float(
+            (cwd_pred[var_target] - cwd_test[var_target]).mean().values.item()
+        )
+
+        print(f"Rx1day (Max 1-day Precip) Bias: {metrics['rx1day_bias']:.4f}")
+        print(f"SDII (Precip Intensity) Bias: {metrics['sdii_bias']:.4f}")
+        print(f"CDD (Max Dry Spell) Bias: {metrics['cdd_bias']:.4f}")
+        print(f"CWD (Max Wet Spell) Bias: {metrics['cwd_bias']:.4f}")
+
+    # Universal indices
+    lag1_test = indices.lag1_corr(y_test_aligned, var_target)
+    lag1_pred = indices.lag1_corr(y_pred_aligned, var_target)
+    metrics["lag1_corr_bias"] = float(
+        (lag1_pred[var_target] - lag1_test[var_target]).mean().values.item()
+    )
+
+    interann_test = indices.interannual_var(y_test_aligned, var_target)
+    interann_pred = indices.interannual_var(y_pred_aligned, var_target)
+    metrics["interannual_var_bias"] = float(
+        (interann_pred[var_target] - interann_test[var_target]).mean().values.item()
+    )
+
+    # Print metrics
+    print(f"Mean RMSE: {metrics['mean_rmse']:.4f}")
+    print(f"Mean Bias: {metrics['mean_bias']:.4f}")
+    print(f"Mean MAE: {metrics['mean_mae']:.4f}")
+    print(f"Mean Correlation: {metrics['mean_correlation']:.4f}")
+    print(f"Mean Anomaly Correlation: {metrics['mean_anomaly_correlation']:.4f}")
+    print(f"Q95 Bias: {metrics['q95_bias']:.4f}")
+    print(f"Q98 Bias: {metrics['q98_bias']:.4f}")
+    print(f"Std Ratio: {metrics['std_ratio']:.4f}")
+    print(f"PSD Score (log RMSE): {metrics['psd_score']:.4f}")
+    print(f"Lag-1 Autocorr Bias: {metrics['lag1_corr_bias']:.4f}")
+    print(f"Interannual Var Bias: {metrics['interannual_var_bias']:.4f}")
+
+    # Ensemble spread metrics (if applicable)
+    if has_ensemble:
+        ensemble_std = (
+            ds_pred[var_target]
+            .sel(time=common_times)
+            .std(dim="member")
+            .mean()
+            .values.item()
+        )
+        metrics["ensemble_std"] = float(ensemble_std)
+        print(f"Ensemble Spread (std): {metrics['ensemble_std']:.4f}")
+
+    return {
+        "predictions": y_pred_aligned,
+        "test_aligned": y_test_aligned,
+        "rmse": rmse,
+        "metrics": metrics,
+        "psd_test": psd_test,
+        "psd_pred": psd_pred,
+        "lag1_test": lag1_test,
+        "lag1_pred": lag1_pred,
+        **metrics,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compare multiple models")
     parser.add_argument(
@@ -321,12 +564,6 @@ def main():
         help="Path to CORDEX data",
     )
     parser.add_argument(
-        "--deepesd-model",
-        type=str,
-        default="./training/models/model.pt",
-        help="Path to DeepESD model weights",
-    )
-    parser.add_argument(
         "--gan-runs", type=str, nargs="+", help="List of GAN run directories to compare"
     )
     parser.add_argument(
@@ -344,6 +581,20 @@ def main():
         type=str,
         default="./results",
         help="Directory to save results",
+    )
+    parser.add_argument(
+        "--stored-predictions",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Paths to stored prediction NetCDF files to evaluate (instead of running models)",
+    )
+    parser.add_argument(
+        "--prediction-names",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Names for stored predictions (must match length of --stored-predictions if provided)",
     )
 
     args = parser.parse_args()
@@ -373,43 +624,85 @@ def main():
     # Results storage
     results = {}
 
-    # Evaluate DeepESD if model exists (uses standardization)
-    if Path(args.deepesd_model).exists():
-        print("\n=== Loading DeepESD Model ===")
+    # Evaluate stored predictions if provided
+    if args.stored_predictions:
+        print("\n=== Evaluating Stored Predictions ===")
 
-        # DeepESD uses standardization
-        x_train_stand, x_test_stand, _, _, _ = normalize_predictors(
-            x_train, x_test, y_train, y_test, "standardization"
-        )
-        x_train_tensor, y_train_tensor = prepare_torch_data(
-            x_train_stand, y_train, args.domain
-        )
-        x_test_tensor, _ = prepare_torch_data(x_test_stand, y_test, args.domain)
+        # Validate prediction_names if provided
+        if args.prediction_names is not None:
+            if len(args.prediction_names) != len(args.stored_predictions):
+                print(
+                    f"Warning: Number of names ({len(args.prediction_names)}) "
+                    f"does not match number of predictions ({len(args.stored_predictions)}). "
+                    "Using file names."
+                )
+                prediction_names = [Path(p).stem for p in args.stored_predictions]
+            else:
+                prediction_names = args.prediction_names
+        else:
+            prediction_names = [Path(p).stem for p in args.stored_predictions]
 
-        # Create test dataset
-        test_dataset = EmulationTestDataset(x_test_tensor)
-        test_loader = DataLoader(
-            test_dataset, batch_size=args.batch_size, shuffle=False
-        )
+        for pred_path, pred_name in zip(args.stored_predictions, prediction_names):
+            pred_file = Path(pred_path)
+            if not pred_file.exists():
+                print(f"Warning: Prediction file not found: {pred_path}")
+                continue
 
-        deepesd = load_model(
-            "deepesd",
-            model_path=args.deepesd_model,
-            x_shape=x_train_tensor.shape,
-            y_shape=y_train_tensor.shape,
-            device=device,
-        )
-        results["DeepESD"] = evaluate_model(
-            deepesd,
-            test_loader,
-            y_test,
-            y_train,
-            args.var_target,
-            args.domain,
-            "DeepESD",
-        )
-    else:
-        print(f"\nWarning: DeepESD model not found at {args.deepesd_model}")
+            try:
+                results[pred_name] = evaluate_stored_predictions(
+                    predictions_path=pred_file,
+                    y_test=y_test,
+                    y_train=y_train,
+                    var_target=args.var_target,
+                    domain=args.domain,
+                    model_name=pred_name,
+                )
+            except Exception as e:
+                print(f"Error evaluating {pred_path}: {e}")
+                import traceback
+
+                traceback.print_exc()
+                continue
+
+    # Align all stored predictions to common time period
+    if len(results) > 1 and any("test_aligned" in r for r in results.values()):
+        print("\n=== Aligning all predictions to common time period ===")
+
+        # Find minimum common time range across all predictions
+        all_times = []
+        for model_name, result in results.items():
+            if "test_aligned" in result:
+                times = result["test_aligned"].time.values
+                all_times.append(set(times))
+
+        if all_times:
+            # Get intersection of all time periods
+            common_times = sorted(list(set.intersection(*all_times)))
+
+            if len(common_times) > 0:
+                print(f"  Common time period: {len(common_times)} days")
+                print(f"    From: {common_times[0]}")
+                print(f"    To: {common_times[-1]}")
+
+                # Re-align all predictions to common times
+                for model_name, result in results.items():
+                    if "test_aligned" in result:
+                        orig_times = len(result["test_aligned"].time)
+                        result["test_aligned"] = result["test_aligned"].sel(
+                            time=common_times
+                        )
+                        result["predictions"] = result["predictions"].sel(
+                            time=common_times
+                        )
+
+                        if orig_times != len(common_times):
+                            print(
+                                f"  {model_name}: {orig_times} → {len(common_times)} days"
+                            )
+                print()
+            else:
+                print("  Warning: No common times found across all predictions!")
+                print()
 
     # Evaluate each GAN run
     if args.gan_runs:
@@ -592,9 +885,12 @@ def main():
         # Create prediction comparison plots for each model
         print("\nGenerating prediction comparison plots...")
         for model_name, result in results.items():
+            # Use aligned test data if available (for stored predictions)
+            y_test_for_plot = result.get("test_aligned", y_test)
+
             plot_prediction_comparison(
                 model_name=model_name,
-                y_test=y_test,
+                y_test=y_test_for_plot,
                 y_pred=result["predictions"],
                 var_target=args.var_target,
                 domain=args.domain,
@@ -604,7 +900,7 @@ def main():
             # Plot lag-1 autocorrelation maps
             plot_lag1_autocorr_maps(
                 model_name=model_name,
-                y_test=y_test,
+                y_test=y_test_for_plot,
                 y_pred=result["predictions"],
                 var_target=args.var_target,
                 domain=args.domain,

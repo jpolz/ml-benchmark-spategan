@@ -54,24 +54,23 @@ import xarray as xr
 from tqdm import tqdm
 
 from ml_benchmark_spategan.config import config
-from ml_benchmark_spategan.dataloader import dataloader
-from ml_benchmark_spategan.model.learnable_noise import (
+from ml_benchmark_spategan.train.dataloader import dataloader_old
+from ml_benchmark_spategan.train.model.learnable_noise import (
     LearnableNoiseScale,
     SpatialNoiseScale,
 )
-from ml_benchmark_spategan.model.registry import create_discriminator, create_generator
-from ml_benchmark_spategan.training.gan_training import test_gan_step, train_gan_step
-from ml_benchmark_spategan.training.gan_training.losses import FSSLoss
-from ml_benchmark_spategan.training.gan_training.train_gan_step import (
+from ml_benchmark_spategan.train.model.registry import create_discriminator, create_generator
+from ml_benchmark_spategan.train.gan_training import test_gan_step, train_gan_step
+from ml_benchmark_spategan.train.gan_training.losses import FSSLoss
+from ml_benchmark_spategan.train.gan_training.train_gan_step import (
     _generate_ensemble,
 )
-from ml_benchmark_spategan.training.lr_scheduler import setup_optimizers
-from ml_benchmark_spategan.utils.interpolate import LearnableUpsampler
-from ml_benchmark_spategan.utils.normalize import (
+from ml_benchmark_spategan.train.lr_scheduler import setup_optimizers
+from ml_benchmark_spategan.train.normalize import (
     predictions_to_xarray,
     save_normalization_params,
 )
-from ml_benchmark_spategan.visualization.plot_train import (
+from ml_benchmark_spategan.evaluate.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
     plot_predictions_only,
@@ -423,10 +422,9 @@ def main():
     logger.info(f"Run ID: {run_id}")
     logger.info(f"Run directory: {run_dir}")
 
-    dataloader_train, test_dataloader, cf, norm_params = dataloader.build_dataloaders(
+    dataloader_train, test_dataloader, cf, norm_params = dataloader_old.build_dataloaders(
         cf
     )
-    # dataloader_train, test_dataloader = dataloader.build_dummy_dataloaders()
     # update cf in run directory
     cf.save()
 
@@ -448,14 +446,8 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize upsampler based on config
-    use_learnable_upsampler = cf.model.get("use_learnable_upsampler", False)
-    if use_learnable_upsampler:
-        logger.info("Using learnable upsampler")
-        upsampler = LearnableUpsampler(in_channels=15).to(device)
-    else:
-        logger.info("Using fixed bilinear upsampler")
-        upsampler = None
+    logger.info("Using fixed bilinear upsampler")
+    upsampler = None
 
     # Create generator and discriminator using registry
     architecture = cf.model.get("architecture") or cf.model.get(
@@ -633,7 +625,7 @@ def main():
             if upsampler is not None:
                 x_batch_hr = upsampler(x_batch)
             else:
-                x_batch_hr = dataloader.upscale_nn(x_batch)
+                x_batch_hr = dataloader_old.upscale_nn(x_batch)
             # during training, noise channel is added during train step
             y_batch_2d = y_batch.to(device)
 
@@ -684,7 +676,7 @@ def main():
                     if upsampler is not None:
                         x_batch_hr = upsampler(x_batch)
                     else:
-                        x_batch_hr = dataloader.upscale_nn(x_batch)
+                        x_batch_hr = dataloader_old.upscale_nn(x_batch)
 
                     # Use day of year as timestep for diffusion UNET
                     if doy_batch is not None:
@@ -785,7 +777,7 @@ def main():
                 if upsampler is not None:
                     x_batch_hr = upsampler(x_batch)
                 else:
-                    x_batch_hr = dataloader.upscale_nn(x_batch)
+                    x_batch_hr = dataloader_old.upscale_nn(x_batch)
                 y_batch = y_batch.to(device)
                 y_batch_2d = y_batch.view(-1, 1, 128, 128)
 
@@ -956,7 +948,7 @@ def main():
                     if upsampler is not None:
                         x_batch_hr = upsampler(x_batch)
                     else:
-                        x_batch_hr = dataloader.upscale_nn(x_batch)
+                        x_batch_hr = dataloader_old.upscale_nn(x_batch)
                     # during training, noise channel is added during train step
                     y_batch_2d = y_batch.to(device).view(-1, 1, 128, 128)
 
@@ -977,7 +969,7 @@ def main():
                     else:
                         x_batch_hr_with_oro = x_batch_hr
 
-                    x_batch_hr_with_oro = dataloader.add_noise_channel(
+                    x_batch_hr_with_oro = dataloader_old.add_noise_channel(
                         x_batch_hr_with_oro
                     )
 
@@ -1122,14 +1114,14 @@ def main():
                 if upsampler is not None:
                     x_vis_up = upsampler(x_vis)
                 else:
-                    x_vis_up = dataloader.upscale_nn(x_vis)
+                    x_vis_up = dataloader_old.upscale_nn(x_vis)
                 # Concatenate orography if available (before adding noise)
                 if cf.data.use_orography:
                     orography_batch_vis = orography.repeat(
                         x_vis.shape[0], 1, 1
                     ).unsqueeze(1)
                     x_vis_up = torch.cat([x_vis_up, orography_batch_vis], dim=1)
-                x_vis_up = dataloader.add_noise_channel(
+                x_vis_up = dataloader_old.add_noise_channel(
                     x_vis_up
                 )  # add noise to HR or LR?
             else:
