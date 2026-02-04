@@ -238,7 +238,7 @@ class UNetWrapper(BaseWrapper):
         Returns:
             Denormalized predictions (B, 1, 128, 128)
         """
-        from ml_benchmark_spategan.train.interpolate import (
+        from ml_benchmark_spategan.utils.interpolate import (
             add_noise_channel,
             upscale_bilinear,
         )

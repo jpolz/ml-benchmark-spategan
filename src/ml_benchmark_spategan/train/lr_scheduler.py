@@ -39,37 +39,27 @@ def create_warmup_scheduler(
 
     def lr_lambda(epoch):
         if epoch < warmup_epochs:
-            # Phase 1: Linear warmup from warmup_start_lr to target_lr
             return (
                 warmup_start_lr + (target_lr - warmup_start_lr) * epoch / warmup_epochs
             ) / target_lr
         elif epoch < warmup_epochs + plateau_epochs:
-            # Phase 2: Plateau - maintain target learning rate
             return 1.0
         elif epoch < warmup_epochs + plateau_epochs + transition_epochs:
-            # Phase 3: Smooth cosine transition from 1.0 to gamma^0
             transition_progress = (
                 epoch - warmup_epochs - plateau_epochs
             ) / transition_epochs
-            # Cosine annealing from 1.0 to gamma^0 (which is 1.0, so we go to first decay step)
-            # This creates a smooth S-curve transition
             cosine_decay = 0.5 * (1 + np.cos(np.pi * transition_progress))
-            # Interpolate between no decay (1.0) and first decay step (gamma^0 = 1.0)
-            # Actually, let's transition to gamma^transition_epochs to make it smooth
             start_val = 1.0
             end_val = gamma**transition_epochs
             return start_val * cosine_decay + end_val * (1 - cosine_decay)
         else:
-            # Phase 4: Exponential decay after transition
             decay_epoch = epoch - warmup_epochs - plateau_epochs - transition_epochs
             return (gamma**transition_epochs) * (gamma**decay_epoch)
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def setup_optimizers(
-    cf, generator, discriminator, upsampler, learnable_noise_module=None
-):
+def setup_optimizers(cf, generator, discriminator, upsampler):
     """Set up optimizers for generator and discriminator based on config."""
     # Optimizers
     if upsampler is not None:
@@ -77,10 +67,6 @@ def setup_optimizers(
         gen_params = list(generator.parameters()) + list(upsampler.parameters())
     else:
         gen_params = list(generator.parameters())
-
-    # Add learnable noise module parameters if present
-    if learnable_noise_module is not None:
-        gen_params = gen_params + list(learnable_noise_module.parameters())
 
     if cf.training.generator.optimizer == "AdamW":
         gen_opt = torch.optim.AdamW(
