@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=spategan_integration_test
-#SBATCH --partition=ccgp
+#SBATCH --partition=sockdolager
 #SBATCH --time=4:00:00
-#SBATCH --qos=nvgpu
+#SBATCH --qos=sdlgpu
 #SBATCH --output=logs/slurm_integration_test_%j.out
 #SBATCH --error=logs/slurm_integration_test_%j.err
 

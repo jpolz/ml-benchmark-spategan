@@ -18,6 +18,7 @@ def normalize_predictors(
     y_test: xr.Dataset,
     normalization: str,
     orography: xr.DataArray = None,
+    log_base: float = None,
 ) -> Tuple[xr.Dataset, xr.Dataset, xr.Dataset, xr.Dataset, dict]:
     """
     Normalize predictors and predictands according to specified method.
@@ -28,8 +29,9 @@ def normalize_predictors(
         y_train: Training predictands
         y_test: Test predictands
         normalization: Normalization method ('standardization', 'minmax', 'minus1_to_plus1',
-                      'mp1p1_input_m1p1log_target', 'm1p1_log_target', 'std_log_target', etc.)
+                      'mp1p1_input_m1p1log_target', 'mp1p1_input_minmaxlog_target', 'm1p1_log_target', 'std_log_target', etc.)
         orography: Static orography field (optional)
+        log_base: Base for log transform (None for natural log, 10.0 for log10, etc.)
 
     Returns:
         Tuple of (x_train_norm, x_test_norm, y_train_norm, y_test_norm, norm_params)
@@ -122,6 +124,52 @@ def normalize_predictors(
         y_train_norm = y_train_norm * 2 - 1
         y_test_norm = (y_test_norm - y_min_train) / (y_max_train - y_min_train)
         y_test_norm = y_test_norm * 2 - 1
+
+        # Convert to float32
+        y_train_norm = y_train_norm.astype(np.float32)
+        y_test_norm = y_test_norm.astype(np.float32)
+
+        if orography is not None:
+            orography_norm = (orography - norm_params["orog_min"]) / (
+                norm_params["orog_max"] - norm_params["orog_min"]
+            )
+            orography_norm = orography_norm * 2 - 1
+            norm_params["orography_norm"] = orography_norm
+
+    elif normalization == "mp1p1_input_minmaxlog_target":
+        # x sample normalization to [-1, 1]
+        x_train_norm = (x_train - norm_params["x_min"]) / (
+            norm_params["x_max"] - norm_params["x_min"]
+        )
+        x_train_norm = x_train_norm * 2 - 1
+        x_test_norm = (x_test - norm_params["x_min"]) / (
+            norm_params["x_max"] - norm_params["x_min"]
+        )
+        x_test_norm = x_test_norm * 2 - 1
+
+        # y sample normalization: log transform then scale to [0, 1]
+        # Apply log transform with specified base
+        if log_base is None:
+            # Natural log (base e)
+            y_train_norm = np.log1p(y_train + 1e-6) - np.log1p(1e-6)
+            y_test_norm = np.log1p(y_test + 1e-6) - np.log1p(1e-6)
+            norm_params["log_base"] = "e"
+        else:
+            # Log with custom base: log_b(x) = ln(x) / ln(b)
+            y_train_norm = (np.log1p(y_train + 1e-6) - np.log1p(1e-6)) / np.log(
+                log_base
+            )
+            y_test_norm = (np.log1p(y_test + 1e-6) - np.log1p(1e-6)) / np.log(log_base)
+            norm_params["log_base"] = log_base
+
+        y_min_train = y_train_norm.min("time")
+        y_max_train = y_train_norm.max("time")
+        norm_params["y_min_log"] = y_min_train
+        norm_params["y_max_log"] = y_max_train
+
+        # Scale to [0, 1] range (not [-1, 1])
+        y_train_norm = (y_train_norm - y_min_train) / (y_max_train - y_min_train)
+        y_test_norm = (y_test_norm - y_min_train) / (y_max_train - y_min_train)
 
         # Convert to float32
         y_train_norm = y_train_norm.astype(np.float32)
@@ -294,6 +342,61 @@ def denormalize_predictions(y_pred: torch.Tensor, norm_params: dict) -> torch.Te
             torch.expm1(y_log + torch.log1p(torch.tensor(1e-6, device=y_pred.device)))
             - 1e-6
         )
+
+    elif normalization == "mp1p1_input_minmaxlog_target":
+        # Step 1: Reverse [0, 1] scaling to log space
+        y_min_log = norm_params["y_min_log"]
+        y_max_log = norm_params["y_max_log"]
+        log_base = norm_params.get("log_base", "e")
+
+        # Convert xarray to tensor if needed
+        if isinstance(y_min_log, xr.Dataset):
+            y_min_log = torch.from_numpy(y_min_log.to_array()[0].values).float()
+            y_max_log = torch.from_numpy(y_max_log.to_array()[0].values).float()
+        elif isinstance(y_min_log, xr.DataArray):
+            y_min_log = torch.from_numpy(y_min_log.values).float()
+            y_max_log = torch.from_numpy(y_max_log.values).float()
+
+        # Move to same device as predictions
+        y_min_log = y_min_log.to(y_pred.device)
+        y_max_log = y_max_log.to(y_pred.device)
+
+        # Reshape and reverse [0, 1] scaling (no +1/-1 offset)
+        if y_pred.dim() == 2:  # (batch, H*W)
+            y_min_flat = y_min_log.flatten()
+            y_max_flat = y_max_log.flatten()
+            y_log = y_pred * (y_max_flat - y_min_flat) + y_min_flat
+        elif y_pred.dim() == 4:  # (batch, 1, H, W)
+            y_min_exp = y_min_log.unsqueeze(0).unsqueeze(0)
+            y_max_exp = y_max_log.unsqueeze(0).unsqueeze(0)
+            y_log = y_pred * (y_max_exp - y_min_exp) + y_min_exp
+        else:
+            raise ValueError(f"Unexpected prediction shape: {y_pred.shape}")
+
+        # Step 2: Reverse log transform with correct base
+        if log_base == "e":
+            # Natural log: reverse with expm1
+            return (
+                torch.expm1(
+                    y_log + torch.log1p(torch.tensor(1e-6, device=y_pred.device))
+                )
+                - 1e-6
+            )
+        else:
+            # Custom base: reverse with base^x
+            # Forward was: log_b(y + eps) = ln(y + eps) / ln(b)
+            # Reverse: b^y_log - eps
+            log_base_tensor = torch.tensor(log_base, device=y_pred.device)
+            # y_log was in base b, convert back: y = b^(y_log) - offset
+            # But we divided by ln(b) in forward, so multiply back
+            y_log_natural = y_log * torch.log(log_base_tensor)
+            return (
+                torch.expm1(
+                    y_log_natural
+                    + torch.log1p(torch.tensor(1e-6, device=y_pred.device))
+                )
+                - 1e-6
+            )
 
     else:
         raise NotImplementedError(

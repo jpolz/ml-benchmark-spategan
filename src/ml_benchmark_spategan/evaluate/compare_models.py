@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -14,23 +13,19 @@ from torch.utils.data import DataLoader
 from ml_benchmark_spategan.analysis.data_utils import prepare_torch_data
 from ml_benchmark_spategan.analysis.model_loader import load_model
 from ml_benchmark_spategan.config import config
+from ml_benchmark_spategan.evaluate import scores
 from ml_benchmark_spategan.evaluate.visualization.plot_results import (
     plot_lag1_autocorr_maps,
     plot_prediction_comparison,
     plot_psd_comparison,
 )
-from ml_benchmark_spategan.train.dataloader.dataloader_old import (
+from ml_benchmark_spategan.train.dataloader.dataloader import (
     EmulationTestDataset,
     load_cordex_data,
     load_orography,
     split_train_test,
 )
 from ml_benchmark_spategan.train.normalize import normalize_predictors
-
-# Add evaluation directory to path to import diagnostics
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "evaluation"))
-import diagnostics
-import indices
 
 
 def compute_psd_score(
@@ -145,7 +140,7 @@ def evaluate_model(
     metrics = {}
 
     # RMSE
-    rmse = diagnostics.rmse(x0=y_test, x1=y_pred, var=var_target, dim="time")
+    rmse = scores.rmse(x0=y_test, x1=y_pred, var=var_target, dim="time")
     metrics["mean_rmse"] = float(rmse[var_target].mean().values.item())
 
     # Bias (mean error)
@@ -184,7 +179,7 @@ def evaluate_model(
     metrics["std_ratio"] = float((std_pred / std_test).mean().values.item())
 
     # Power Spectral Density
-    psd_test, psd_pred = diagnostics.psd(x0=y_test, x1=y_pred, var=var_target)
+    psd_test, psd_pred = scores.psd(x0=y_test, x1=y_pred, var=var_target)
 
     # Compute PSD score (RMSE in log space)
     metrics["psd_score"] = compute_psd_score(psd_test, psd_pred)
@@ -193,22 +188,22 @@ def evaluate_model(
     if var_target == "tasmax":
         # Temperature-specific indices
         # Summer days (days > 25°C, threshold=300K for data in Kelvin)
-        su_test = indices.su(y_test, var_target, threshold=298.15)  # 25°C in Kelvin
-        su_pred = indices.su(y_pred, var_target, threshold=298.15)
+        su_test = scores.su(y_test, var_target, threshold=298.15)  # 25°C in Kelvin
+        su_pred = scores.su(y_pred, var_target, threshold=298.15)
         metrics["su_bias"] = float(
             (su_pred[var_target] - su_test[var_target]).mean().values.item()
         )
 
         # Mean annual maximum temperature
-        txx_test = indices.txx(y_test, var_target)
-        txx_pred = indices.txx(y_pred, var_target)
+        txx_test = scores.txx(y_test, var_target)
+        txx_pred = scores.txx(y_pred, var_target)
         metrics["txx_bias"] = float(
             (txx_pred[var_target] - txx_test[var_target]).mean().values.item()
         )
 
         # Mean annual minimum temperature
-        txn_test = indices.txn(y_test, var_target)
-        txn_pred = indices.txn(y_pred, var_target)
+        txn_test = scores.txn(y_test, var_target)
+        txn_pred = scores.txn(y_pred, var_target)
         metrics["txn_bias"] = float(
             (txn_pred[var_target] - txn_test[var_target]).mean().values.item()
         )
@@ -220,29 +215,29 @@ def evaluate_model(
     elif var_target == "pr":
         # Precipitation-specific indices
         # Maximum 1-day precipitation
-        rx1day_test = indices.rx1day(y_test, var_target)
-        rx1day_pred = indices.rx1day(y_pred, var_target)
+        rx1day_test = scores.rx1day(y_test, var_target)
+        rx1day_pred = scores.rx1day(y_pred, var_target)
         metrics["rx1day_bias"] = float(
             (rx1day_pred[var_target] - rx1day_test[var_target]).mean().values.item()
         )
 
         # Simple precipitation intensity (mean precip on wet days)
-        sdii_test = indices.sdii(y_test, var_target, wet_threshold=1.0)
-        sdii_pred = indices.sdii(y_pred, var_target, wet_threshold=1.0)
+        sdii_test = scores.sdii(y_test, var_target, wet_threshold=1.0)
+        sdii_pred = scores.sdii(y_pred, var_target, wet_threshold=1.0)
         metrics["sdii_bias"] = float(
             (sdii_pred[var_target] - sdii_test[var_target]).mean().values.item()
         )
 
         # Consecutive dry days
-        cdd_test = indices.cdd(y_test, var_target, dry_threshold=1.0)
-        cdd_pred = indices.cdd(y_pred, var_target, dry_threshold=1.0)
+        cdd_test = scores.cdd(y_test, var_target, dry_threshold=1.0)
+        cdd_pred = scores.cdd(y_pred, var_target, dry_threshold=1.0)
         metrics["cdd_bias"] = float(
             (cdd_pred[var_target] - cdd_test[var_target]).mean().values.item()
         )
 
         # Consecutive wet days
-        cwd_test = indices.cwd(y_test, var_target, wet_threshold=1.0)
-        cwd_pred = indices.cwd(y_pred, var_target, wet_threshold=1.0)
+        cwd_test = scores.cwd(y_test, var_target, wet_threshold=1.0)
+        cwd_pred = scores.cwd(y_pred, var_target, wet_threshold=1.0)
         metrics["cwd_bias"] = float(
             (cwd_pred[var_target] - cwd_test[var_target]).mean().values.item()
         )
@@ -254,8 +249,8 @@ def evaluate_model(
 
     # Universal indices (applicable to both variables)
     # Lag-1 autocorrelation
-    lag1_test = indices.lag1_corr(y_test, var_target)
-    lag1_pred = indices.lag1_corr(y_pred, var_target)
+    lag1_test = scores.lag1_corr(y_test, var_target)
+    lag1_pred = scores.lag1_corr(y_pred, var_target)
     metrics["lag1_corr_bias"] = float(
         (lag1_pred[var_target] - lag1_test[var_target]).mean().values.item()
     )
@@ -265,8 +260,8 @@ def evaluate_model(
     lag1_pred_spatial = lag1_pred
 
     # Interannual variability
-    interann_test = indices.interannual_var(y_test, var_target)
-    interann_pred = indices.interannual_var(y_pred, var_target)
+    interann_test = scores.interannual_var(y_test, var_target)
+    interann_pred = scores.interannual_var(y_pred, var_target)
     metrics["interannual_var_bias"] = float(
         (interann_pred[var_target] - interann_test[var_target]).mean().values.item()
     )
@@ -388,9 +383,7 @@ def evaluate_stored_predictions(
     metrics = {}
 
     # RMSE
-    rmse = diagnostics.rmse(
-        x0=y_test_aligned, x1=y_pred_aligned, var=var_target, dim="time"
-    )
+    rmse = scores.rmse(x0=y_test_aligned, x1=y_pred_aligned, var=var_target, dim="time")
     metrics["mean_rmse"] = float(rmse[var_target].mean().values.item())
 
     # Bias (mean error)
@@ -429,27 +422,27 @@ def evaluate_stored_predictions(
     metrics["std_ratio"] = float((std_pred / std_test).mean().values.item())
 
     # Power Spectral Density
-    psd_test, psd_pred = diagnostics.psd(
+    psd_test, psd_pred = scores.psd(
         x0=y_test_aligned, x1=y_pred_aligned, var=var_target
     )
     metrics["psd_score"] = compute_psd_score(psd_test, psd_pred)
 
     # Variable-specific indices
     if var_target == "tasmax":
-        su_test = indices.su(y_test_aligned, var_target, threshold=298.15)
-        su_pred = indices.su(y_pred_aligned, var_target, threshold=298.15)
+        su_test = scores.su(y_test_aligned, var_target, threshold=298.15)
+        su_pred = scores.su(y_pred_aligned, var_target, threshold=298.15)
         metrics["su_bias"] = float(
             (su_pred[var_target] - su_test[var_target]).mean().values.item()
         )
 
-        txx_test = indices.txx(y_test_aligned, var_target)
-        txx_pred = indices.txx(y_pred_aligned, var_target)
+        txx_test = scores.txx(y_test_aligned, var_target)
+        txx_pred = scores.txx(y_pred_aligned, var_target)
         metrics["txx_bias"] = float(
             (txx_pred[var_target] - txx_test[var_target]).mean().values.item()
         )
 
-        txn_test = indices.txn(y_test_aligned, var_target)
-        txn_pred = indices.txn(y_pred_aligned, var_target)
+        txn_test = scores.txn(y_test_aligned, var_target)
+        txn_pred = scores.txn(y_pred_aligned, var_target)
         metrics["txn_bias"] = float(
             (txn_pred[var_target] - txn_test[var_target]).mean().values.item()
         )
@@ -459,26 +452,26 @@ def evaluate_stored_predictions(
         print(f"TXn (Annual Min) Bias: {metrics['txn_bias']:.4f}")
 
     elif var_target == "pr":
-        rx1day_test = indices.rx1day(y_test_aligned, var_target)
-        rx1day_pred = indices.rx1day(y_pred_aligned, var_target)
+        rx1day_test = scores.rx1day(y_test_aligned, var_target)
+        rx1day_pred = scores.rx1day(y_pred_aligned, var_target)
         metrics["rx1day_bias"] = float(
             (rx1day_pred[var_target] - rx1day_test[var_target]).mean().values.item()
         )
 
-        sdii_test = indices.sdii(y_test_aligned, var_target, wet_threshold=1.0)
-        sdii_pred = indices.sdii(y_pred_aligned, var_target, wet_threshold=1.0)
+        sdii_test = scores.sdii(y_test_aligned, var_target, wet_threshold=1.0)
+        sdii_pred = scores.sdii(y_pred_aligned, var_target, wet_threshold=1.0)
         metrics["sdii_bias"] = float(
             (sdii_pred[var_target] - sdii_test[var_target]).mean().values.item()
         )
 
-        cdd_test = indices.cdd(y_test_aligned, var_target, dry_threshold=1.0)
-        cdd_pred = indices.cdd(y_pred_aligned, var_target, dry_threshold=1.0)
+        cdd_test = scores.cdd(y_test_aligned, var_target, dry_threshold=1.0)
+        cdd_pred = scores.cdd(y_pred_aligned, var_target, dry_threshold=1.0)
         metrics["cdd_bias"] = float(
             (cdd_pred[var_target] - cdd_test[var_target]).mean().values.item()
         )
 
-        cwd_test = indices.cwd(y_test_aligned, var_target, wet_threshold=1.0)
-        cwd_pred = indices.cwd(y_pred_aligned, var_target, wet_threshold=1.0)
+        cwd_test = scores.cwd(y_test_aligned, var_target, wet_threshold=1.0)
+        cwd_pred = scores.cwd(y_pred_aligned, var_target, wet_threshold=1.0)
         metrics["cwd_bias"] = float(
             (cwd_pred[var_target] - cwd_test[var_target]).mean().values.item()
         )
@@ -489,14 +482,14 @@ def evaluate_stored_predictions(
         print(f"CWD (Max Wet Spell) Bias: {metrics['cwd_bias']:.4f}")
 
     # Universal indices
-    lag1_test = indices.lag1_corr(y_test_aligned, var_target)
-    lag1_pred = indices.lag1_corr(y_pred_aligned, var_target)
+    lag1_test = scores.lag1_corr(y_test_aligned, var_target)
+    lag1_pred = scores.lag1_corr(y_pred_aligned, var_target)
     metrics["lag1_corr_bias"] = float(
         (lag1_pred[var_target] - lag1_test[var_target]).mean().values.item()
     )
 
-    interann_test = indices.interannual_var(y_test_aligned, var_target)
-    interann_pred = indices.interannual_var(y_pred_aligned, var_target)
+    interann_test = scores.interannual_var(y_test_aligned, var_target)
+    interann_pred = scores.interannual_var(y_pred_aligned, var_target)
     metrics["interannual_var_bias"] = float(
         (interann_pred[var_target] - interann_test[var_target]).mean().values.item()
     )
@@ -764,6 +757,7 @@ def main():
                     y_test,
                     normalization,
                     orography=orography_da,
+                    log_base=None,  # Can add to args if needed
                 )
             )
 

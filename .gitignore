@@ -12,6 +12,7 @@ runs/
 logs/
 results/
 archive/
+sweeps/
 runs_summary.md
 analysis/results/
 analysis/dataset_comparison/

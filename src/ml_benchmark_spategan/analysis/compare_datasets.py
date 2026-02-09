@@ -7,7 +7,6 @@ to understand if certain domains or variables have more/less variable spatial pa
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import cartopy.crs as ccrs
@@ -15,11 +14,8 @@ import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Add evaluation directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "evaluation"))
-import diagnostics
-
-from ml_benchmark_spategan.train.dataloader.dataloader_old import (
+from ml_benchmark_spategan.evaluate import scores
+from ml_benchmark_spategan.train.dataloader.dataloader import (
     load_cordex_data,
     split_train_test,
 )
@@ -243,9 +239,9 @@ def compute_dataset_statistics(x_test, y_test, var_target, domain):
     stats["q95"] = float(data.quantile(0.95).values)
     stats["q99"] = float(data.quantile(0.99).values)
 
-    # Compute power spectral density using diagnostics.psd (requires two datasets)
+    # Compute power spectral density using scores.psd (requires two datasets)
     # We'll use the same dataset twice to just get one PSD
-    psd_data, _ = diagnostics.psd(x0=y_test, x1=y_test, var=var_target)
+    psd_data, _ = scores.psd(x0=y_test, x1=y_test, var=var_target)
     stats["psd"] = psd_data
 
     return stats

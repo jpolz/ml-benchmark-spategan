@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch import amp
 
 from ml_benchmark_spategan.train.gan_training.losses import GANLossManager
-from ml_benchmark_spategan.train.interpolate import add_noise_channel
+from ml_benchmark_spategan.utils.interpolate import add_noise_channel
 
 
 def compute_gradient_penalty_r1(

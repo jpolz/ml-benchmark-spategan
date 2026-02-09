@@ -11,15 +11,46 @@ deep learning emulators on the CORDEX Benchmark dataset. The workflow handles:
 For more details on the CORDEX Benchmark dataset properties, see the data notebooks.
 """
 
+import math
 from typing import Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import xarray as xr
 from torch.utils.data import DataLoader, Dataset
 
-from ml_benchmark_spategan.train.normalize import normalize_predictors
+from ml_benchmark_spategan.utils.normalize import normalize_predictors
+
+
+def sinusoidal_encoding_doy(doy: torch.Tensor, normalize: bool = True) -> torch.Tensor:
+    """
+    Apply sinusoidal encoding to day of year values.
+
+    For models that expect values between 0 and 1, this creates a smooth
+    cyclic representation where day 1 and day 365/366 are close together.
+
+    This is used when cf.data.use_doy is True to replace the zero timestep
+    with seasonal conditioning information.
+
+    Args:
+        doy: Day of year tensor (values 1-366)
+        normalize: If True, normalize to [0, 1] range. If False, keep raw encoding.
+
+    Returns:
+        Encoded day of year tensor
+    """
+    # Convert to angle (0 to 2*pi)
+    angle = (doy - 1) / 365.25 * 2 * math.pi
+
+    if normalize:
+        # Use sine encoding normalized to [0, 1]
+        # sin ranges from [-1, 1], so (sin + 1) / 2 gives [0, 1]
+        encoded = (torch.sin(angle) + 1.0) / 2.0
+    else:
+        # Use raw sine encoding [-1, 1]
+        encoded = torch.sin(angle)
+
+    return encoded
 
 
 def temporal_collate_fn(batch):
@@ -182,19 +213,6 @@ def split_train_test(
     return x_train, y_train, x_test, y_test
 
 
-def upscale_nn(x):
-    # x: (15, 16, 16)
-    return F.interpolate(x, size=(128, 128), mode="bilinear")
-
-
-def add_noise_channel(x):
-    """Add noise channel. Wrapper for utils.interpolate.add_noise_channel."""
-    # x: (B, 15, 128, 128)
-    from ml_benchmark_spategan.train.interpolate import add_noise_channel as _add_noise
-
-    return _add_noise(x, noise_std=0.2)
-
-
 class EmulationTrainingDataset(Dataset):
     """
     PyTorch Dataset for RCM emulation training with spatiotemporal samples.
@@ -254,6 +272,8 @@ class EmulationTrainingDataset(Dataset):
             x_sample, y_sample = self.x_data[idx, :], self.y_data[idx, :]
             if self.doy is not None:
                 doy_sample = self.doy[idx]
+                # Apply sinusoidal encoding to doy
+                doy_sample = sinusoidal_encoding_doy(doy_sample, normalize=True)
                 return x_sample, y_sample, doy_sample
             return x_sample, y_sample
         else:
@@ -268,6 +288,8 @@ class EmulationTrainingDataset(Dataset):
             x_sample, y_sample = self.x_data[idxs, :], self.y_data[idxs, :]
             if self.doy is not None:
                 doy_sample = self.doy[idx]
+                # Apply sinusoidal encoding to doy
+                doy_sample = sinusoidal_encoding_doy(doy_sample, normalize=True)
                 return x_sample, y_sample, doy_sample
             return x_sample, y_sample
 
@@ -332,6 +354,8 @@ class EmulationTestDataset(Dataset):
             x_sample = self.x_data[idx, :]
             if self.doy is not None:
                 doy_sample = self.doy[idx]
+                # Apply sinusoidal encoding to doy
+                doy_sample = sinusoidal_encoding_doy(doy_sample, normalize=True)
                 return x_sample, doy_sample
             return x_sample
         else:
@@ -346,6 +370,8 @@ class EmulationTestDataset(Dataset):
             x_sample = self.x_data[idxs, :]
             if self.doy is not None:
                 doy_sample = self.doy[idx]
+                # Apply sinusoidal encoding to doy
+                doy_sample = sinusoidal_encoding_doy(doy_sample, normalize=True)
                 return x_sample, doy_sample
             return x_sample
 
@@ -434,6 +460,7 @@ def build_dataloaders(cf):
         doy_test = None
 
     # Normalize predictors and predictands
+    log_base = getattr(cf.data, "log_base", None)
     x_train_stand, x_test_stand, y_train, y_test, norm_params_partial = (
         normalize_predictors(
             x_train=x_train,
@@ -442,6 +469,7 @@ def build_dataloaders(cf):
             y_test=y_test,
             normalization=cf.data.normalization,
             orography=orography,
+            log_base=log_base,
         )
     )
 

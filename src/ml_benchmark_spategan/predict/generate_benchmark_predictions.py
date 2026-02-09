@@ -56,7 +56,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_benchmark_spategan.analysis.model_loader import load_model
 from ml_benchmark_spategan.config import config
-from ml_benchmark_spategan.train.dataloader.dataloader_old import (
+from ml_benchmark_spategan.train.dataloader.dataloader import (
     load_cordex_data,
     load_orography,
     split_train_test,
@@ -411,8 +411,15 @@ def load_model_and_config(
 
     # Get normalization method and compute parameters
     normalization = cf.data.get("normalization", "standardization")
+    log_base = cf.data.get("log_base", None)
     _, _, _, _, full_norm_params = normalize_predictors(
-        x_train, x_test, y_train, y_test, normalization, orography=orography_da
+        x_train,
+        x_test,
+        y_train,
+        y_test,
+        normalization,
+        orography=orography_da,
+        log_base=log_base,
     )
 
     # Extract normalization stats for predictors
@@ -421,7 +428,11 @@ def load_model_and_config(
             "mean": x_train.mean("time"),
             "std": x_train.std("time"),
         }
-    elif normalization in ["minus1_to_plus1", "mp1p1_input_m1p1log_target"]:
+    elif normalization in [
+        "minus1_to_plus1",
+        "mp1p1_input_m1p1log_target",
+        "mp1p1_input_minmaxlog_target",
+    ]:
         norm_params = {
             "min": x_train.min("time"),
             "max": x_train.max("time"),
@@ -534,6 +545,16 @@ def main():
         action="store_true",
         help="Generate predictions for both pr and tasmax",
     )
+    parser.add_argument(
+        "--validation-only",
+        action="store_true",
+        help="Generate only validation predictions (skip benchmark test predictions)",
+    )
+    parser.add_argument(
+        "--benchmark-only",
+        action="store_true",
+        help="Generate only benchmark test predictions (skip validation predictions)",
+    )
 
     args = parser.parse_args()
 
@@ -571,7 +592,23 @@ def main_from_config(args):
     )
     ensemble_size = settings.get("ensemble_size", 10)
     batch_size = args.batch_size or settings.get("batch_size", 32)
-    generate_validation = settings.get("generate_validation", True)
+
+    # Control what to generate
+    if args.validation_only and args.benchmark_only:
+        print("ERROR: Cannot specify both --validation-only and --benchmark-only")
+        return
+
+    if args.validation_only:
+        generate_validation = True
+        generate_benchmark = False
+    elif args.benchmark_only:
+        generate_validation = False
+        generate_benchmark = True
+    else:
+        # Default: follow config or generate both
+        generate_validation = settings.get("generate_validation", True)
+        generate_benchmark = settings.get("generate_benchmark", True)
+
     validation_output = (
         Path(args.validation_output)
         if args.validation_output
@@ -614,106 +651,167 @@ def main_from_config(args):
                         total_models += 1
 
     print(f"\nFound {total_models} model configurations to process")
-    print(f"Benchmark output: {output_base}")
+    if generate_benchmark:
+        print(f"Benchmark output: {output_base}")
     if generate_validation:
         print(f"Validation output: {validation_output}")
     print(f"Default ensemble size: {ensemble_size} (may be overridden per model)")
     print()
 
-    # Process each model configuration
+    # Group models by (domain, experiment, use_orography) to process both variables together
+    from collections import defaultdict
+    grouped_models = defaultdict(dict)
     for model_config in models_list:
-        run_dir = Path(model_config.get("run_dir"))
-        checkpoint = model_config.get("checkpoint", "best_model")
         domain = model_config.get("domain")
-        var_target = model_config.get("var_target")
         experiment = model_config.get("training_experiment")
-        model_ensemble_size = model_config.get("ensemble_size", ensemble_size)
+        use_orography = model_config.get("use_orography", False)
+        var_target = model_config.get("var_target")
+        
+        key = (domain, experiment, use_orography)
+        grouped_models[key][var_target] = model_config
+    
+    print(f"Grouped into {len(grouped_models)} domain/experiment/orography combinations")
+    print()
 
+    # Process each group (both variables together)
+    processed_models = 0
+    for (domain, experiment, use_orography), var_configs in grouped_models.items():
         print(f"\n{'=' * 70}")
-        print(f"Processing: {domain} / {var_target} / {experiment}")
-        print(f"  Run: {run_dir}")
-        print(f"  Checkpoint: {checkpoint}")
-        print(f"  Ensemble size: {model_ensemble_size}")
+        print(f"Processing: {domain} / {experiment}")
+        print(f"  Variables: {', '.join(var_configs.keys())}")
+        print(f"  Orography: {'yes' if use_orography else 'no'}")
         print(f"{'=' * 70}")
 
-        if not run_dir.exists():
-            print(f"  ERROR: Run directory not found: {run_dir}")
+        # Check that we have both variables
+        if 'pr' not in var_configs or 'tasmax' not in var_configs:
+            print(f"  WARNING: Missing one or both variables for {domain}/{experiment}")
+            print(f"  Available: {list(var_configs.keys())}")
+            print("  Skipping this combination - need both pr and tasmax")
             continue
 
+        # Load models and config for both variables
+        models_and_params = {}
+        templates = {}
+        
         try:
-            # Load model
-            model_wrapper, norm_params, model_cf, normalization = load_model_and_config(
-                run_dir=run_dir,
-                checkpoint=checkpoint,
-                domain=domain,
-                var_target=var_target,
-                data_path=data_path,
-                experiment=experiment,
-                device=device,
-            )
+            for var_target, model_config in var_configs.items():
+                run_dir = Path(model_config.get("run_dir"))
+                checkpoint = model_config.get("checkpoint", "best_model")
+                model_ensemble_size = model_config.get("ensemble_size", ensemble_size)
+                
+                if not run_dir.exists():
+                    print(f"  ERROR: Run directory not found for {var_target}: {run_dir}")
+                    raise FileNotFoundError(f"Run directory not found: {run_dir}")
+                
+                print(f"  Loading {var_target} model from {run_dir.name}, checkpoint: {checkpoint}")
+                
+                # Load model
+                model_wrapper, norm_params, model_cf, normalization = load_model_and_config(
+                    run_dir=run_dir,
+                    checkpoint=checkpoint,
+                    domain=domain,
+                    var_target=var_target,
+                    data_path=data_path,
+                    experiment=experiment,
+                    device=device,
+                )
+                
+                models_and_params[var_target] = {
+                    'model_wrapper': model_wrapper,
+                    'norm_params': norm_params,
+                    'normalization': normalization,
+                    'ensemble_size': model_ensemble_size,
+                    'run_dir': run_dir,
+                    'checkpoint': checkpoint,
+                }
+                
+                # Load template
+                templates[var_target] = load_template(var_target, domain)
+        
+        except Exception as e:
+            print(f"  ERROR loading models: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
-            # Load template
-            template = load_template(var_target, domain)
+        # === Generate validation predictions (training-time test split) ===
+        # Note: Validation predictions are still saved separately per variable for backward compatibility
+        if generate_validation:
+            print("\n  --- Generating validation predictions ---")
+            try:
+                train_pred_path = get_training_test_predictor(
+                    data_path, domain, experiment
+                )
+                print(f"  Training predictor: {train_pred_path.name}")
 
-            # === Generate validation predictions (training-time test split) ===
-            if generate_validation:
-                print("\n  --- Generating validation predictions ---")
-                try:
-                    train_pred_path = get_training_test_predictor(
-                        data_path, domain, experiment
-                    )
-                    print(f"  Training predictor: {train_pred_path.name}")
-
+                for var_target, params in models_and_params.items():
                     ds_val_preds = run_predictions_for_file(
-                        model_wrapper=model_wrapper,
+                        model_wrapper=params['model_wrapper'],
                         predictor_path=train_pred_path,
-                        template=template,
+                        template=templates[var_target],
                         domain=domain,
                         var_target=var_target,
-                        normalization=normalization,
-                        norm_params=norm_params,
+                        normalization=params['normalization'],
+                        norm_params=params['norm_params'],
                         device=device,
-                        ensemble_size=model_ensemble_size,
+                        ensemble_size=params['ensemble_size'],
                         batch_size=batch_size,
                     )
 
                     # Save to flat validation folder: validation_predictions/{domain}_{var}_{experiment}_{runid}_{checkpoint}.nc
-                    checkpoint_str = checkpoint.replace(".", "").replace("/", "_")
-                    val_filename = f"{domain}_{var_target}_{experiment}_{run_dir.name}_ep{checkpoint_str}.nc"
+                    checkpoint_str = params['checkpoint'].replace(".", "").replace("/", "_")
+                    val_filename = f"{domain}_{var_target}_{experiment}_{params['run_dir'].name}_ep{checkpoint_str}.nc"
                     val_path = validation_output / val_filename
                     ds_val_preds.to_netcdf(val_path)
-                    print(f"  Saved validation predictions: {val_path}")
+                    print(f"  Saved validation predictions for {var_target}: {val_path}")
 
-                except Exception as e:
-                    print(f"  Error generating validation predictions: {e}")
+            except Exception as e:
+                print(f"  Error generating validation predictions: {e}")
 
-            # === Generate benchmark test predictions ===
-            print("\n  --- Generating benchmark test predictions ---")
+        # === Generate benchmark test predictions ===
+        # Combine both variables into single files
+        if generate_benchmark:
+            print("\n  --- Generating benchmark test predictions (combined files) ---")
             test_files = get_test_predictor_files(data_path, domain)
             print(f"  Found {len(test_files)} test predictor files")
 
             for pred_path in tqdm(
-                test_files, desc=f"{domain}/{var_target}/{experiment}"
+                test_files, desc=f"{domain}/{experiment}"
             ):
                 try:
                     path_info = parse_predictor_path(pred_path)
 
-                    ds_preds = run_predictions_for_file(
-                        model_wrapper=model_wrapper,
-                        predictor_path=pred_path,
-                        template=template,
-                        domain=domain,
-                        var_target=var_target,
-                        normalization=normalization,
-                        norm_params=norm_params,
-                        device=device,
-                        ensemble_size=model_ensemble_size,
-                        batch_size=batch_size,
-                    )
+                    # Generate predictions for BOTH variables
+                    ds_preds_by_var = {}
+                    for var_target, params in models_and_params.items():
+                        ds_preds = run_predictions_for_file(
+                            model_wrapper=params['model_wrapper'],
+                            predictor_path=pred_path,
+                            template=templates[var_target],
+                            domain=domain,
+                            var_target=var_target,
+                            normalization=params['normalization'],
+                            norm_params=params['norm_params'],
+                            device=device,
+                            ensemble_size=params['ensemble_size'],
+                            batch_size=batch_size,
+                        )
+                        ds_preds_by_var[var_target] = ds_preds
 
-                    # Output path: <base>/<Domain>_Domain/<experiment>/<period>/<condition>/
+                    # Merge both variables into a single dataset
+                    ds_combined = xr.merge([
+                        ds_preds_by_var['pr'],
+                        ds_preds_by_var['tasmax']
+                    ])
+
+                    # Output path: <base>/<model_name>/<Domain>_Domain/<experiment>/<period>/<condition>/
+                    # Model name: spaGAN_orog or spaGAN_no_orog
+                    model_name = (
+                        "spaGAN_orog" if use_orography else "spaGAN_no_orog"
+                    )
                     out_dir = (
                         output_base
+                        / model_name
                         / f"{domain}_Domain"
                         / experiment
                         / path_info["period_folder"]
@@ -721,27 +819,22 @@ def main_from_config(args):
                     )
                     out_dir.mkdir(parents=True, exist_ok=True)
 
-                    out_filename = f"Predictions_{var_target}_{path_info['gcm']}_{path_info['time_period']}.nc"
+                    # Combined filename with both variables
+                    out_filename = f"Predictions_pr_tasmax_{path_info['gcm']}_{path_info['time_period']}.nc"
                     out_path = out_dir / out_filename
 
-                    ds_preds.to_netcdf(out_path)
+                    ds_combined.to_netcdf(out_path)
 
                 except Exception as e:
                     print(f"  Error processing {pred_path}: {e}")
                     continue
 
-            processed_models += 1
-
-        except Exception as e:
-            print(f"  ERROR loading model: {e}")
-            import traceback
-
-            traceback.print_exc()
-            continue
+        processed_models += 1
 
     print(f"\n{'=' * 70}")
     print(f"Completed: {processed_models}/{total_models} model configurations")
-    print(f"Benchmark predictions saved to: {output_base}")
+    if generate_benchmark:
+        print(f"Benchmark predictions saved to: {output_base}")
     if generate_validation:
         print(f"Validation predictions saved to: {validation_output}")
     print(f"{'=' * 70}")

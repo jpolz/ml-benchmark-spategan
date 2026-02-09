@@ -44,7 +44,7 @@ echo "Using configuration: $TEMP_CONFIG"
 echo ""
 
 # Run training using virtual environment with the copied config
-.venv/bin/python -m ml_benchmark_spategan.training.training --config $TEMP_CONFIG
+.venv/bin/python -m ml_benchmark_spategan.train.training --config $TEMP_CONFIG
 
 # Clean up temporary config file
 rm -f $TEMP_CONFIG

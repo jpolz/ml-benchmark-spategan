@@ -4,7 +4,8 @@ data:
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr     # tasmax or pr 
-  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target"
+  normalization: "mp1p1_input_minmaxlog_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target" or "mp1p1_input_minmaxlog_target"
+  log_base: 10.0  # Base for log transform in log-based normalizations (default: e for natural log, use 10.0 for log10)
   num_workers: 4
   t_past: 0  # number of past time steps as input
   t_future: 0  # number of future time steps to predict
@@ -14,7 +15,7 @@ data:
 # Training configuration
 training:
   batch_size: 32
-  ensemble_size: 3
+  ensemble_size: 5
   noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
   epochs: 200
   batches_per_epoch:       # set to null to use all data; otherwise set an integer value
@@ -46,8 +47,6 @@ training:
   # patience: 10 # not implemented
   checkpoint_dir: "checkpoints"
   fss_loss: false # mainly for precip
-  # Learnable noise settings (for stochastic generation)
-  noise_learnable: false # Enable learnable noise scale
   noise_type: "global" # "global" (single scalar) or "spatial" (per-pixel map)
   noise_init: 0.05 # Initial noise scale (use 0.05 for tasmax, 0.1 for pr)
   noise_min: 0.0 # Minimum allowed noise scale

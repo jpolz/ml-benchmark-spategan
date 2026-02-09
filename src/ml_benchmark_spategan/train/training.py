@@ -40,20 +40,20 @@ The module saves:
 import argparse
 import json
 import logging
-import math
 import os
 import pathlib
 
 # Import diagnostics
-import sys
-
 import numpy as np
 import torch
 import torch.nn as nn
-import xarray as xr
 from tqdm import tqdm
 
 from ml_benchmark_spategan.config import config
+from ml_benchmark_spategan.evaluate.diagnostics import (
+    compute_diagnostics,
+    compute_model_selection_score,
+)
 from ml_benchmark_spategan.evaluate.visualization.plot_train import (
     plot_adversarial_losses,
     plot_diagnostic_history,
@@ -61,7 +61,7 @@ from ml_benchmark_spategan.evaluate.visualization.plot_train import (
 )
 from ml_benchmark_spategan.train.dataloader import dataloader
 from ml_benchmark_spategan.train.gan_training import test_gan_step, train_gan_step
-from ml_benchmark_spategan.train.gan_training.losses import FSSLoss
+from ml_benchmark_spategan.train.gan_training.fss import FSSLoss
 from ml_benchmark_spategan.train.gan_training.train_gan_step import (
     _generate_ensemble,
 )
@@ -71,294 +71,12 @@ from ml_benchmark_spategan.train.model.registry import (
     create_generator,
 )
 from ml_benchmark_spategan.train.normalize import (
-    predictions_to_xarray,
     save_normalization_params,
 )
-
-# Add evaluation directory to path to import diagnostics
-sys.path.insert(
-    0, str(pathlib.Path(__file__).parent.parent.parent.parent / "evaluation")
+from ml_benchmark_spategan.utils.interpolate import (
+    add_noise_channel,
+    upscale_bilinear,
 )
-import diagnostics
-import indices
-from model_selection_score import DEFAULT_WEIGHTS as SCORE_WEIGHTS
-
-
-def compute_model_selection_score(
-    diagnostics_dict: dict, weights: dict = None
-) -> float:
-    """
-    Compute the weighted composite model selection score from diagnostic metrics.
-
-    Lower scores indicate better models. This score is used to determine the
-    best model checkpoint during training.
-
-    Args:
-        diagnostics_dict: Dictionary of diagnostic metrics (single epoch, not history)
-        weights: Optional custom weights dict. Uses DEFAULT_WEIGHTS if None.
-
-    Returns:
-        Composite score (lower is better)
-    """
-    if weights is None:
-        weights = SCORE_WEIGHTS
-
-    total_weight = 0.0
-    weighted_sum = 0.0
-
-    for metric_name, weight in weights.items():
-        if metric_name not in diagnostics_dict:
-            continue
-
-        value = diagnostics_dict[metric_name]
-
-        # Skip NaN values or non-numeric
-        if not isinstance(value, (int, float)) or np.isnan(value):
-            continue
-
-        # Metrics where ideal value is 1.0
-        if metric_name in ["std_ratio", "correlation", "anomaly_correlation"]:
-            value = abs(value - 1.0)
-        else:
-            # For metrics where higher is better (negative weight), negate first
-            if weight < 0:
-                value = -value
-            # Then take absolute value so all contributions are positive
-            value = abs(value)
-
-        # Apply weight
-        weighted_value = abs(weight) * value
-        weighted_sum += weighted_value
-        total_weight += abs(weight)
-
-    if total_weight > 0:
-        return weighted_sum / total_weight
-    return float("inf")
-
-
-def sinusoidal_encoding_doy(doy: torch.Tensor, normalize: bool = True) -> torch.Tensor:
-    """
-    Apply sinusoidal encoding to day of year values.
-
-    For models that expect values between 0 and 1, this creates a smooth
-    cyclic representation where day 1 and day 365/366 are close together.
-
-    This is used when cf.data.use_doy is True to replace the zero timestep
-    with seasonal conditioning information.
-
-    Args:
-        doy: Day of year tensor (values 1-366)
-        normalize: If True, normalize to [0, 1] range. If False, keep raw encoding.
-
-    Returns:
-        Encoded day of year tensor
-    """
-    # Convert to angle (0 to 2*pi)
-    angle = (doy - 1) / 365.25 * 2 * math.pi
-
-    if normalize:
-        # Use sine encoding normalized to [0, 1]
-        # sin ranges from [-1, 1], so (sin + 1) / 2 gives [0, 1]
-        encoded = (torch.sin(angle) + 1.0) / 2.0
-    else:
-        # Use raw sine encoding [-1, 1]
-        encoded = torch.sin(angle)
-
-    return encoded
-
-
-def compute_diagnostics(
-    y_pred_all,
-    y_true_all,
-    norm_params,
-    cf,
-    mean_fss_test,
-    epoch,
-    ensemble_preds_all=None,
-):
-    """
-    Compute diagnostic metrics from predictions and ground truth.
-
-    Args:
-        y_pred_all: Concatenated predictions tensor (all test batches)
-        y_true_all: Concatenated ground truth tensor (all test batches)
-        norm_params: Normalization parameters dictionary
-        cf: Configuration object
-        mean_fss_test: Mean FSS test loss for this epoch
-        epoch: Current epoch number
-        ensemble_preds_all: Optional ensemble predictions (B, N_ensemble, H, W) for variability computation
-
-    Returns:
-        dict: Dictionary of diagnostic metrics
-    """
-    logger = logging.getLogger(__name__)
-
-    # Convert to xarray with denormalization
-    pred_ds, true_ds = predictions_to_xarray(
-        y_pred_all, y_true_all, norm_params, var_name=cf.data.var_target
-    )
-
-    var_target = cf.data.var_target
-
-    # Compute standard diagnostics
-    rmse = diagnostics.rmse(true_ds, pred_ds, var=var_target, dim="time")
-    bias_mean = diagnostics.bias_index(
-        true_ds,
-        pred_ds,
-        index_fn=lambda x, **kw: x[var_target].mean("time"),
-    )
-    bias_q95 = diagnostics.bias_index(
-        true_ds,
-        pred_ds,
-        index_fn=lambda x, **kw: x[var_target].quantile(0.95, dim="time"),
-    )
-    bias_q98 = diagnostics.bias_index(
-        true_ds,
-        pred_ds,
-        index_fn=lambda x, **kw: x[var_target].quantile(0.98, dim="time"),
-    )
-    std_ratio = diagnostics.ratio_index(
-        true_ds,
-        pred_ds,
-        index_fn=lambda x, **kw: x[var_target].std("time"),
-    )
-
-    # Mean Absolute Error
-    mae = np.abs(pred_ds[var_target] - true_ds[var_target]).mean("time")
-
-    # Pearson correlation
-    correlation = xr.corr(
-        pred_ds[var_target],
-        true_ds[var_target],
-        dim="time",
-    )
-
-    spatial_dims = norm_params["spatial_dims"]
-    # Anomaly correlation (after removing climatology)
-    pred_anomaly = pred_ds[var_target] - pred_ds[var_target].mean("time")
-    true_anomaly = true_ds[var_target] - true_ds[var_target].mean("time")
-    anomaly_correlation = xr.corr(pred_anomaly, true_anomaly, dim=spatial_dims)
-
-    # Power Spectral Density and distance metric
-    psd_true, psd_pred = diagnostics.psd(x0=true_ds, x1=pred_ds, var=var_target)
-
-    # Compute PSD distance (RMSE in log space)
-    wavenumber_min = 1
-    wavenumber_max = min(60, len(psd_true) - 1)
-    wavenumber = psd_true["wavenumber"].values
-    mask = (wavenumber >= wavenumber_min) & (wavenumber <= wavenumber_max)
-    eps = 1e-10
-    log_psd_true = np.log10(psd_true.values[mask] + eps)
-    log_psd_pred = np.log10(psd_pred.values[mask] + eps)
-    psd_distance = float(np.sqrt(np.mean((log_psd_true - log_psd_pred) ** 2)))
-
-    # Build diagnostics dictionary with spatially-averaged values
-    diagnostics_dict = {
-        "rmse": rmse[var_target].mean().values.item(),
-        "bias_mean": bias_mean.mean().values.item(),
-        "bias_q95": bias_q95.mean().values.item(),
-        "bias_q98": bias_q98.mean().values.item(),
-        "std_ratio": std_ratio.mean().values.item(),
-        "mae": mae.mean().values.item(),
-        "correlation": correlation.mean().values.item(),
-        "anomaly_correlation": anomaly_correlation.mean().values.item(),
-        "psd_distance": psd_distance,
-        "fss": mean_fss_test,
-        "epoch": epoch,
-    }
-
-    # Ensemble variability (if ensemble predictions provided)
-    if ensemble_preds_all is not None:
-        # ensemble_preds_all shape: (B, N_ensemble, H*W)
-        # Compute std along ensemble dimension, then spatial mean
-        ensemble_std = ensemble_preds_all.std(dim=1).mean().item()
-        diagnostics_dict["ensemble_std"] = float(ensemble_std)
-        logger.info(f"  Ensemble Variability (std): {ensemble_std:.4f}")
-
-    # Variable-specific climate indices
-    if var_target == "tasmax":
-        # Temperature-specific indices
-        # Summer days (days > 25°C, threshold=298.15K for data in Kelvin)
-        su_true = indices.su(true_ds, var_target, threshold=298.15)
-        su_pred = indices.su(pred_ds, var_target, threshold=298.15)
-        su_bias = (su_pred[var_target] - su_true[var_target]).mean().values.item()
-        diagnostics_dict["su_bias"] = float(su_bias)
-
-        # Mean annual maximum temperature
-        txx_true = indices.txx(true_ds, var_target)
-        txx_pred = indices.txx(pred_ds, var_target)
-        txx_bias = (txx_pred[var_target] - txx_true[var_target]).mean().values.item()
-        diagnostics_dict["txx_bias"] = float(txx_bias)
-
-        # Mean annual minimum temperature
-        txn_true = indices.txn(true_ds, var_target)
-        txn_pred = indices.txn(pred_ds, var_target)
-        txn_bias = (txn_pred[var_target] - txn_true[var_target]).mean().values.item()
-        diagnostics_dict["txn_bias"] = float(txn_bias)
-
-        logger.info(f"  Summer Days Bias: {su_bias:.4f}")
-        logger.info(f"  TXx (Annual Max) Bias: {txx_bias:.4f}")
-        logger.info(f"  TXn (Annual Min) Bias: {txn_bias:.4f}")
-
-    elif var_target == "pr":
-        # Precipitation-specific indices
-        # Maximum 1-day precipitation
-        rx1day_true = indices.rx1day(true_ds, var_target)
-        rx1day_pred = indices.rx1day(pred_ds, var_target)
-        rx1day_bias = (
-            (rx1day_pred[var_target] - rx1day_true[var_target]).mean().values.item()
-        )
-        diagnostics_dict["rx1day_bias"] = float(rx1day_bias)
-
-        # Simple precipitation intensity (mean precip on wet days)
-        sdii_true = indices.sdii(true_ds, var_target, wet_threshold=1.0)
-        sdii_pred = indices.sdii(pred_ds, var_target, wet_threshold=1.0)
-        sdii_bias = (sdii_pred[var_target] - sdii_true[var_target]).mean().values.item()
-        diagnostics_dict["sdii_bias"] = float(sdii_bias)
-
-        # Consecutive dry days
-        cdd_true = indices.cdd(true_ds, var_target, dry_threshold=1.0)
-        cdd_pred = indices.cdd(pred_ds, var_target, dry_threshold=1.0)
-        cdd_bias = (cdd_pred[var_target] - cdd_true[var_target]).mean().values.item()
-        diagnostics_dict["cdd_bias"] = float(cdd_bias)
-
-        # Consecutive wet days
-        cwd_true = indices.cwd(true_ds, var_target, wet_threshold=1.0)
-        cwd_pred = indices.cwd(pred_ds, var_target, wet_threshold=1.0)
-        cwd_bias = (cwd_pred[var_target] - cwd_true[var_target]).mean().values.item()
-        diagnostics_dict["cwd_bias"] = float(cwd_bias)
-
-        logger.info(f"  Rx1day (Max 1-day Precip) Bias: {rx1day_bias:.4f}")
-        logger.info(f"  SDII (Precip Intensity) Bias: {sdii_bias:.4f}")
-        logger.info(f"  CDD (Max Dry Spell) Bias: {cdd_bias:.4f}")
-        logger.info(f"  CWD (Max Wet Spell) Bias: {cwd_bias:.4f}")
-
-    # Universal indices (applicable to both variables)
-    # Lag-1 autocorrelation
-    lag1_true = indices.lag1_corr(true_ds, var_target)
-    lag1_pred = indices.lag1_corr(pred_ds, var_target)
-    lag1_bias = (lag1_pred[var_target] - lag1_true[var_target]).mean().values.item()
-    diagnostics_dict["lag1_corr_bias"] = float(lag1_bias)
-
-    # Interannual variability
-    interann_true = indices.interannual_var(true_ds, var_target)
-    interann_pred = indices.interannual_var(pred_ds, var_target)
-    interann_bias = (
-        (interann_pred[var_target] - interann_true[var_target]).mean().values.item()
-    )
-    diagnostics_dict["interannual_var_bias"] = float(interann_bias)
-
-    # Log key diagnostics
-    logger.info(f"  RMSE (spatial mean): {diagnostics_dict['rmse']:.4f}")
-    logger.info(f"  Bias Mean (spatial mean): {diagnostics_dict['bias_mean']:.4f}")
-    logger.info(f"  Bias Q95 (spatial mean): {diagnostics_dict['bias_q95']:.4f}")
-    logger.info(f"  Std Ratio (spatial mean): {diagnostics_dict['std_ratio']:.4f}")
-    logger.info(f"  Correlation (spatial mean): {diagnostics_dict['correlation']:.4f}")
-    logger.info(f"  PSD Distance (log RMSE): {diagnostics_dict['psd_distance']:.4f}")
-    logger.info(f"  Lag-1 Autocorr Bias: {lag1_bias:.4f}")
-    logger.info(f"  Interannual Var Bias: {interann_bias:.4f}")
-
-    return diagnostics_dict
 
 
 def main():
@@ -468,7 +186,7 @@ def main():
     if var_target == "pr":
         # Precipitation thresholds (mm/day)
         fss_thresholds = [0.1, 0.2, 0.4, 0.8, 1.6, 2.4, 4, 6, 10, 25]
-    elif var_target in ["tasmax", "tas", "tasmin"]:
+    elif var_target == "tasmax":
         # Temperature thresholds (Kelvin) - relative to typical range
         # These cover ~270K to ~310K with finer resolution in middle
         fss_thresholds = [270, 275, 280, 285, 290, 295, 300, 305, 310]
@@ -584,25 +302,20 @@ def main():
             # Unpack batch data (may include doy)
             if len(batch_data) == 3:
                 x_batch, y_batch, doy_batch = batch_data
-                doy_batch = doy_batch.to(device)
+                # doy_batch is already sinusoidally encoded by the dataloader
+                timesteps = doy_batch.to(device)
             else:
                 x_batch, y_batch = batch_data
-                doy_batch = None
+                # Fallback to zero timestep if no doy available
+                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
             x_batch = x_batch.to(device)
             if upsampler is not None:
                 x_batch_hr = upsampler(x_batch)
             else:
-                x_batch_hr = dataloader.upscale_nn(x_batch)
+                x_batch_hr = upscale_bilinear(x_batch)
             # during training, noise channel is added during train step
             y_batch_2d = y_batch.to(device)
-
-            # Use day of year as timestep for diffusion UNET (with sinusoidal encoding)
-            if doy_batch is not None:
-                timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
-            else:
-                # Fallback to zero timestep if no doy available
-                timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
             # Train discriminator n_critic times
             n_critic = getattr(cf.training, "n_critic", 1)
@@ -622,20 +335,22 @@ def main():
                         batch_data = next(dataloader_train_iter)
                         if len(batch_data) == 3:
                             x_batch, y_batch, doy_batch = batch_data
-                            doy_batch = doy_batch.to(device)
+                            # doy_batch is already sinusoidally encoded by the dataloader
+                            timesteps = doy_batch.to(device)
                         else:
                             x_batch, y_batch = batch_data
-                            doy_batch = None
+                            timesteps = torch.zeros([x_batch.shape[0]]).to(device)
                     except StopIteration:
                         # If we run out of batches, reset iterator
                         dataloader_train_iter = iter(dataloader_train)
                         batch_data = next(dataloader_train_iter)
                         if len(batch_data) == 3:
                             x_batch, y_batch, doy_batch = batch_data
-                            doy_batch = doy_batch.to(device)
+                            # doy_batch is already sinusoidally encoded by the dataloader
+                            timesteps = doy_batch.to(device)
                         else:
                             x_batch, y_batch = batch_data
-                            doy_batch = None
+                            timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                     x_batch = x_batch.to(device)
                     y_batch_2d = y_batch.to(device)
@@ -644,13 +359,7 @@ def main():
                     if upsampler is not None:
                         x_batch_hr = upsampler(x_batch)
                     else:
-                        x_batch_hr = dataloader.upscale_nn(x_batch)
-
-                    # Use day of year as timestep for diffusion UNET
-                    if doy_batch is not None:
-                        timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
-                    else:
-                        timesteps = torch.zeros([x_batch.shape[0]]).to(device)
+                        x_batch_hr = upscale_bilinear(x_batch)
 
                     if cf.data.use_orography:
                         orography_batch = orography.repeat(
@@ -734,24 +443,19 @@ def main():
                 # Unpack batch data (may include doy)
                 if len(batch_data) == 3:
                     x_batch, y_batch, doy_batch = batch_data
-                    doy_batch = doy_batch.to(device)
+                    # doy_batch is already sinusoidally encoded by the dataloader
+                    timesteps = doy_batch.to(device)
                 else:
                     x_batch, y_batch = batch_data
-                    doy_batch = None
+                    timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                 x_batch = x_batch.to(device)
                 if upsampler is not None:
                     x_batch_hr = upsampler(x_batch)
                 else:
-                    x_batch_hr = dataloader.upscale_nn(x_batch)
+                    x_batch_hr = upscale_bilinear(x_batch)
                 y_batch = y_batch.to(device)
                 y_batch_2d = y_batch.view(-1, 1, 128, 128)
-
-                # Use day of year as timestep for diffusion UNET
-                if doy_batch is not None:
-                    timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
-                else:
-                    timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                 if cf.data.use_orography:
                     orography_batch = orography.repeat(
@@ -901,10 +605,11 @@ def main():
                     # Unpack batch data (may include doy)
                     if len(batch_data) == 3:
                         x_batch, y_batch, doy_batch = batch_data
-                        doy_batch = doy_batch.to(device)
+                        # doy_batch is already sinusoidally encoded by the dataloader
+                        timesteps = doy_batch.to(device)
                     else:
                         x_batch, y_batch = batch_data
-                        doy_batch = None
+                        timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                     x_batch = x_batch.to(device)
                     if upsampler is not None:
@@ -913,15 +618,9 @@ def main():
                     if upsampler is not None:
                         x_batch_hr = upsampler(x_batch)
                     else:
-                        x_batch_hr = dataloader.upscale_nn(x_batch)
+                        x_batch_hr = upscale_bilinear(x_batch)
                     # during training, noise channel is added during train step
                     y_batch_2d = y_batch.to(device).view(-1, 1, 128, 128)
-
-                    # Use day of year as timestep for diffusion UNET
-                    if doy_batch is not None:
-                        timesteps = sinusoidal_encoding_doy(doy_batch, normalize=True)
-                    else:
-                        timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
                     # Concatenate orography if available (before adding noise)
                     if cf.data.use_orography:
@@ -934,9 +633,7 @@ def main():
                     else:
                         x_batch_hr_with_oro = x_batch_hr
 
-                    x_batch_hr_with_oro = dataloader.add_noise_channel(
-                        x_batch_hr_with_oro
-                    )
+                    x_batch_hr_with_oro = add_noise_channel(x_batch_hr_with_oro)
 
                     y_batch = torch.flatten(y_batch, start_dim=1)
 
@@ -1074,16 +771,14 @@ def main():
                 if upsampler is not None:
                     x_vis_up = upsampler(x_vis)
                 else:
-                    x_vis_up = dataloader.upscale_nn(x_vis)
+                    x_vis_up = upscale_bilinear(x_vis)
                 # Concatenate orography if available (before adding noise)
                 if cf.data.use_orography:
                     orography_batch_vis = orography.repeat(
                         x_vis.shape[0], 1, 1
                     ).unsqueeze(1)
                     x_vis_up = torch.cat([x_vis_up, orography_batch_vis], dim=1)
-                x_vis_up = dataloader.add_noise_channel(
-                    x_vis_up
-                )  # add noise to HR or LR?
+                x_vis_up = add_noise_channel(x_vis_up)  # add noise to HR or LR?
             else:
                 x_vis_up = x_vis
             # logger.info(f"  Plotting sample {idx}")
