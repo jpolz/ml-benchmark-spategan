@@ -606,3 +606,38 @@ def build_dataloaders(cf):
     )  # (H, W)
 
     return dataloader_train, test_dataloader, cf, norm_params
+
+def build_dataloader_inference(cf, ds_test, batch_size=32):
+    
+    times = ds_test["time"].values
+    if getattr(cf.data, "use_doy", False):
+        doy = ds_test["time"].dt.dayofyear.values
+    else:
+        doy = None
+
+    x_tensor = torch.from_numpy(
+        ds_test.to_array().transpose("time", "variable", "lat", "lon").values
+    ).float()
+
+    dataset = EmulationTestDataset(
+        x_data=x_tensor,
+        times=times,
+        t_future=cf.data.t_future,
+        t_past=cf.data.t_past,
+        orography=None,
+        doy=doy,
+    )
+
+    # Use temporal collate function if temporal dimensions are active
+    is_temporal = (cf.data.t_past > 0) or (cf.data.t_future > 0)
+    collate_fn = temporal_collate_fn if is_temporal else None
+
+    dataloader = DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=cf.data.num_workers,
+        collate_fn=collate_fn,
+    )
+
+    return dataloader

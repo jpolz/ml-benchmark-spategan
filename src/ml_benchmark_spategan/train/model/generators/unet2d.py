@@ -221,7 +221,7 @@ class UNetWrapper(BaseWrapper):
         if self.checkpoint_epoch is None:
             self.checkpoint_epoch = checkpoint.get("epoch", None)
 
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
+    def predict(self, x: torch.Tensor, doy: torch.Tensor) -> torch.Tensor:
         """
         Generate predictions from input with UNet-specific preprocessing.
 
@@ -234,7 +234,7 @@ class UNetWrapper(BaseWrapper):
 
         Args:
             x: Input tensor (B, C, 16, 16)
-
+            doy: Day of year tensor (B,)
         Returns:
             Denormalized predictions (B, 1, 128, 128)
         """
@@ -268,8 +268,8 @@ class UNetWrapper(BaseWrapper):
             x_with_noise = add_noise_channel(x_hr, noise_std=self.config.training.noise_std_gen)
 
             # Generate with timestep conditioning (timestep=0 for inference)
-            timesteps = torch.zeros(x.shape[0], device=self.device)
-            output = self.model(x_with_noise, timesteps)
+            # timesteps = torch.zeros(x.shape[0], device=self.device)
+            output = self.model(x_with_noise, doy)
 
             # Denormalize predictions
             norm_params = self._build_norm_params()
