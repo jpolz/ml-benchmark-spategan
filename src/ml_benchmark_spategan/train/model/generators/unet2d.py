@@ -187,18 +187,7 @@ class UNetWrapper(BaseWrapper):
         is_temporal = (t_past > 0) or (t_future > 0)
 
         if is_temporal:
-            from ml_benchmark_spategan.train.model.generators.unet3d import (
-                create_unet3d_generator,
-            )
-
-            unet_cfg = self.config.model.generator.diffusion_unet
-            self.model = create_unet3d_generator(
-                unet_cfg,
-                normalization=self.config.data.normalization,
-                t_past=t_past,
-                t_future=t_future,
-                base_channels=unet_cfg.in_channels - 1,
-            )
+            raise NotImplementedError("Temporal UNet (3D) architecture is not implemented in this wrapper.")
         else:
             # Standard 2D UNet
             unet_cfg = self.config.model.generator.diffusion_unet
