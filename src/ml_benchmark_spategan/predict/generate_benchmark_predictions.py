@@ -299,10 +299,12 @@ def run_predictions_for_file(
     """
     # Load and preprocess predictor data
     ds_test = xr.open_dataset(predictor_path)
-    if domain == "SA":
-        ds_test = ds_test.drop_vars("time_bnds", errors="ignore")
-
+    # if domain == "SA":
+    #     print(ds_test)
+    #     ds_test = ds_test.drop_vars("time_bnds", errors="ignore") # Drop time_bnds if present, as it can cause issues with alignment and is not needed for prediction
+    #     print(ds_test)
     # Apply normalization using pre-computed parameters
+    print(ds_test.t_850.mean(["lat", "lon"]))
     # Standardize: (x - mean) / std
     if normalization == "standardization":
         ds_normalized = (ds_test - norm_params["mean"]) / norm_params["std"]
@@ -318,8 +320,11 @@ def run_predictions_for_file(
         # Default: standardization
         ds_normalized = (ds_test - norm_params["mean"]) / norm_params["std"]
 
+    print(ds_normalized.t_850.mean(["lat", "lon"]))
     # Convert to tensor
-    x_arr = ds_normalized.to_array().transpose("time", "variable", "lat", "lon").values
+    x_arr = ds_normalized.to_array().transpose("time", "variable", "lat", "lon")
+    print(x_arr)
+    x_arr = x_arr.values
     x_tensor = torch.from_numpy(x_arr).float()
 
     # Generate predictions in batches
@@ -590,7 +595,7 @@ def main_from_config(args):
         if args.output_dir != "./predictions"
         else Path(settings.get("output_base", "benchmark_predictions"))
     )
-    ensemble_size = settings.get("ensemble_size", 10)
+    ensemble_size = settings.get("ensemble_size", 5)
     batch_size = args.batch_size or settings.get("batch_size", 32)
 
     # Control what to generate
@@ -669,7 +674,7 @@ def main_from_config(args):
         
         key = (domain, experiment, use_orography)
         grouped_models[key][var_target] = model_config
-    
+    print(grouped_models)
     print(f"Grouped into {len(grouped_models)} domain/experiment/orography combinations")
     print()
 
@@ -774,7 +779,10 @@ def main_from_config(args):
             print("\n  --- Generating benchmark test predictions (combined files) ---")
             test_files = get_test_predictor_files(data_path, domain)
             print(f"  Found {len(test_files)} test predictor files")
-
+            for pred_path in tqdm(
+                test_files, desc=f"{domain}/{experiment}"
+            ):
+                print(parse_predictor_path(pred_path))
             for pred_path in tqdm(
                 test_files, desc=f"{domain}/{experiment}"
             ):
@@ -975,6 +983,7 @@ def main_single_run(args):
                 try:
                     # Parse path metadata
                     path_info = parse_predictor_path(pred_path)
+                    print(f"\nProcessing: {pred_path.name}")
 
                     # Generate predictions
                     ds_preds = run_predictions_for_file(

@@ -310,12 +310,59 @@ def main():
                 timesteps = torch.zeros([x_batch.shape[0]]).to(device)
 
             x_batch = x_batch.to(device)
+            print(
+                f"[DEBUG training loop] After .to(device) - x_batch shape: {x_batch.shape}"
+            )
             if upsampler is not None:
                 x_batch_hr = upsampler(x_batch)
             else:
                 x_batch_hr = upscale_bilinear(x_batch)
-            # during training, noise channel is added during train step
+            print(
+                f"[DEBUG training loop] After upscaling - x_batch_hr shape: {x_batch_hr.shape}"
+            )
+
+            # Handle target: extract center timestep if temporal data
             y_batch_2d = y_batch.to(device)
+            print(
+                f"[DEBUG training loop] y_batch_2d shape before processing: {y_batch_2d.shape}"
+            )
+            if y_batch_2d.ndim == 5:
+                # y_batch is (B, T, C, H, W) - extract center timestep
+                t_past = cf.data.get("t_past", 0)
+                if t_past > 0:
+                    y_batch_2d = y_batch_2d[
+                        :, t_past, :, :, :
+                    ]  # (B, T, C, H, W) -> (B, C, H, W)
+                    print(
+                        f"[DEBUG training loop] y_batch_2d after extracting center (t_past={t_past}): {y_batch_2d.shape}"
+                    )
+                else:
+                    # If t_past=0, squeeze the temporal dimension
+                    y_batch_2d = y_batch_2d.squeeze(1)
+                    print(
+                        f"[DEBUG training loop] y_batch_2d after squeeze(1): {y_batch_2d.shape}"
+                    )
+                print(
+                    f"[DEBUG training loop] y_batch_2d shape after squeeze: {y_batch_2d.shape}"
+                )
+
+            # For temporal models, create 4D version of x_batch_hr for discriminator
+            # (discriminator only sees center timestep, generator uses full temporal context)
+            # Note: temporal data is (B, T, C, H, W) not (B, C, T, H, W)
+            if x_batch_hr.ndim == 5 and cf.data.get("t_past", 0) > 0:
+                t_past = cf.data.t_past
+                print(
+                    f"[DEBUG training loop] Extracting center timestep (t_past={t_past}) from x_batch_hr"
+                )
+                x_batch_hr_for_disc = x_batch_hr[
+                    :, t_past, :, :, :
+                ]  # (B, T, C, H, W) -> (B, C, H, W)
+                print(
+                    f"[DEBUG training loop] x_batch_hr_for_disc shape: {x_batch_hr_for_disc.shape}"
+                )
+            else:
+                x_batch_hr_for_disc = x_batch_hr
+                print("[DEBUG training loop] Using x_batch_hr as-is for disc")
 
             # Train discriminator n_critic times
             n_critic = getattr(cf.training, "n_critic", 1)
@@ -355,11 +402,29 @@ def main():
                     x_batch = x_batch.to(device)
                     y_batch_2d = y_batch.to(device)
 
+                    # Handle target: extract center timestep if temporal data
+                    if y_batch_2d.ndim == 5:
+                        t_past = cf.data.get("t_past", 0)
+                        if t_past > 0:
+                            y_batch_2d = y_batch_2d[
+                                :, t_past, :, :, :
+                            ]  # (B, T, C, H, W) -> (B, C, H, W)
+                        else:
+                            y_batch_2d = y_batch_2d.squeeze(1)
+
                     # Recompute upsampled version for new batch
                     if upsampler is not None:
                         x_batch_hr = upsampler(x_batch)
                     else:
                         x_batch_hr = upscale_bilinear(x_batch)
+
+                    # For temporal models, create 4D version for discriminator
+                    # Note: temporal data is (B, T, C, H, W) not (B, C, T, H, W)
+                    if x_batch_hr.ndim == 5 and cf.data.get("t_past", 0) > 0:
+                        t_past = cf.data.t_past
+                        x_batch_hr_for_disc = x_batch_hr[:, t_past, :, :, :]
+                    else:
+                        x_batch_hr_for_disc = x_batch_hr
 
                     if cf.data.use_orography:
                         orography_batch = orography.repeat(
@@ -368,11 +433,11 @@ def main():
                     else:
                         orography_batch = None
 
-                # Train discriminator only
+                # Train discriminator only (pass full 5D for generator, but it won't be used since gen_opt=None)
                 _, disc_loss = train_gan_step(
                     config=cf,
                     input_image=x_batch,
-                    input_image_hr=x_batch_hr,
+                    input_image_hr=x_batch_hr,  # Full 5D for generator (unused in disc-only step)
                     orography=orography_batch,
                     target=y_batch_2d,
                     step=epoch * len(dataloader_train) + batch_idx,

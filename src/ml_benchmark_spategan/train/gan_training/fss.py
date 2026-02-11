@@ -1,9 +1,10 @@
+from typing import Dict, List, Union
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-from typing import Dict, List, Union
 
 class FSSCalculator:
     """
@@ -67,6 +68,17 @@ class FSSCalculator:
             th = torch.log1p(th + 1e-6) - torch.log1p(torch.tensor(1e-6))
             th = (th - y_min) / (y_max - y_min)
             th = th * 2 - 1
+            return th
+
+        elif config.data.normalization == "mp1p1_input_minmaxlog_target":
+            # Inputs normalized to [-1,1], targets log-transformed then minmax normalized
+            y_min_log = norm_params["y_min_log"][config.data.var_target].mean().values
+            y_max_log = norm_params["y_max_log"][config.data.var_target].mean().values
+
+            # Apply log transform to thresholds
+            th = torch.log1p(th + 1e-6)
+            # Apply minmax normalization using log-space min/max
+            th = (th - y_min_log) / (y_max_log - y_min_log + 1e-8)
             return th
 
         elif config.data.normalization == "m1p1_log_target":

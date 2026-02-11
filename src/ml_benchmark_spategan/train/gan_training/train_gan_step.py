@@ -59,47 +59,123 @@ def _generate_ensemble(
     """
     Generate ensemble predictions efficiently.
 
+    Handles both 4D (spatial) and 5D (temporal) inputs:
+    - 4D: diffusion_unet with (B, C, H, W)
+    - 5D: diffusion_unet_3d with (B, C, T, H, W)
+
     Args:
         generator: Generator model
         architecture: Model architecture name
-        input_image: Low-resolution input (B, C, 16, 16)
-        input_image_hr: High-resolution input (B, C, 128, 128)
-        orography: Orography input (B, 1, 128, 128)
+        input_image: Low-resolution input (B, C, 16, 16) or (B, C*T, 16, 16)
+        input_image_hr: High-resolution input (B, C, 128, 128) or (B, C, T, 128, 128)
+        orography: Orography input (B, 1, 128, 128) or (B, 1, T, 128, 128)
         timesteps: Timesteps for diffusion models
         ensemble_size: Number of ensemble members
         noise_std: Standard deviation of noise channel for diffusion models
 
     Returns:
-        Ensemble predictions (B, ensemble_size, 128, 128)
+        Ensemble predictions:
+        - 4D case: (B, ensemble_size, 128, 128)
+        - 5D case with n_pred_steps=1: (B, ensemble_size, 128, 128)
+        - 5D case with n_pred_steps>1: (B, ensemble_size, n_pred_steps, 128, 128)
     """
     batch_size = input_image.shape[0]
 
-    # Pre-allocate output tensor for efficiency
-    gen_ensemble = torch.empty(
-        batch_size,
-        ensemble_size,
-        128,
-        128,
-        device=input_image.device,
-        dtype=input_image.dtype,
-    )
+    # Detect if we're dealing with temporal (5D) data
+    is_temporal = input_image_hr.ndim == 5
 
     if architecture == "spategan":
+        # Pre-allocate output tensor for efficiency
+        gen_ensemble = torch.empty(
+            batch_size,
+            ensemble_size,
+            128,
+            128,
+            device=input_image.device,
+            dtype=input_image.dtype,
+        )
         for i in range(ensemble_size):
             gen_ensemble[:, i] = generator(input_image).view(-1, 128, 128)
-    elif architecture == "diffusion_unet":
+
+    elif architecture in ["diffusion_unet", "diffusion_unet_3d"]:
         # Concatenate orography if available
         if orography is not None:
-            input_with_oro = torch.cat([input_image_hr, orography], dim=1)
+            if is_temporal:
+                # 5D: (B, C, T, H, W) + (B, 1, T, H, W)
+                input_with_oro = torch.cat([input_image_hr, orography], dim=1)
+            else:
+                # 4D: (B, C, H, W) + (B, 1, H, W)
+                input_with_oro = torch.cat([input_image_hr, orography], dim=1)
         else:
             input_with_oro = input_image_hr
-        # Add DIFFERENT noise for each ensemble member
-        for i in range(ensemble_size):
-            input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
 
-            gen_ensemble[:, i] = generator(input_with_noise, timesteps).view(
-                -1, 128, 128
-            )
+        # Generate first sample to determine output shape (handles n_pred_steps)
+        input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
+        first_output = generator(input_with_noise, timesteps)
+
+        # Determine output shape
+        if first_output.ndim == 3:
+            # (B, H, W) - single timestep output
+            output_shape = (batch_size, ensemble_size, 128, 128)
+        elif first_output.ndim == 4:
+            if first_output.shape[1] == 1:
+                # (B, 1, H, W) - squeeze channel dim
+                output_shape = (batch_size, ensemble_size, 128, 128)
+                first_output = first_output.squeeze(1)
+            else:
+                # (B, n_pred_steps, H, W) - multi-step prediction
+                n_pred_steps = first_output.shape[1]
+                output_shape = (batch_size, ensemble_size, n_pred_steps, 128, 128)
+        elif first_output.ndim == 5:
+            # (B, C, T, H, W) from diffusion_unet_3d
+            if first_output.shape[1] == 1 and first_output.shape[2] == 1:
+                # (B, 1, 1, H, W) - squeeze both channel and temporal dims
+                output_shape = (batch_size, ensemble_size, 128, 128)
+                first_output = first_output.squeeze(1).squeeze(1)
+            elif first_output.shape[1] == 1:
+                # (B, 1, T, H, W) - squeeze channel dim only
+                n_pred_steps = first_output.shape[2]
+                output_shape = (batch_size, ensemble_size, n_pred_steps, 128, 128)
+                first_output = first_output.squeeze(1)
+            else:
+                raise ValueError(f"Unexpected 5D output with C={first_output.shape[1]}")
+        else:
+            raise ValueError(f"Unexpected generator output shape: {first_output.shape}")
+
+        # Pre-allocate output tensor
+        gen_ensemble = torch.empty(
+            *output_shape,
+            device=input_image.device,
+            dtype=input_image.dtype,
+        )
+
+        # Store first sample
+        gen_ensemble[:, 0] = first_output
+
+        # Generate remaining ensemble members with DIFFERENT noise
+        for i in range(1, ensemble_size):
+            input_with_noise = add_noise_channel(input_with_oro, noise_std=noise_std)
+            output = generator(input_with_noise, timesteps)
+
+            # Handle output shape consistently
+            if output.ndim == 5:
+                # (B, C, T, H, W) from diffusion_unet_3d
+                if output.shape[1] == 1 and output.shape[2] == 1:
+                    # (B, 1, 1, H, W) - squeeze both dims
+                    output = output.squeeze(1).squeeze(1)
+                elif output.shape[1] == 1:
+                    # (B, 1, T, H, W) - squeeze channel dim
+                    output = output.squeeze(1)
+            elif (
+                output.ndim == 4
+                and output.shape[1] == 1
+                and output_shape[-2:] == (128, 128)
+            ):
+                # (B, 1, H, W) - squeeze channel dim
+                output = output.squeeze(1)
+
+            gen_ensemble[:, i] = output
+
     else:
         raise ValueError(f"Invalid architecture: {architecture}")
 
@@ -170,6 +246,32 @@ def train_gan_step(
     generator.train()
     discriminator.train()
 
+    # Debug: Print input shapes
+    print(f"[DEBUG train_gan_step] input_image shape: {input_image.shape}")
+    print(f"[DEBUG train_gan_step] input_image_hr shape: {input_image_hr.shape}")
+    print(f"[DEBUG train_gan_step] target shape: {target.shape}")
+    print(
+        f"[DEBUG train_gan_step] orography shape: {orography.shape if orography is not None else None}"
+    )
+
+    # For temporal models (5D input_image_hr), extract center timestep for discriminator
+    # Generator uses full 5D, discriminator needs 4D
+    # Note: temporal data is (B, T, C, H, W) not (B, C, T, H, W)
+    input_image_hr_for_disc = input_image_hr
+    if input_image_hr.ndim == 5 and config.data.get("t_past", 0) > 0:
+        t_past = config.data.t_past
+        print(
+            f"[DEBUG] Extracting center timestep (t_past={t_past}) from 5D input_image_hr"
+        )
+        input_image_hr_for_disc = input_image_hr[
+            :, t_past, :, :, :
+        ]  # Extract center: (B, T, C, H, W) -> (B, C, H, W)
+        print(
+            f"[DEBUG] input_image_hr_for_disc shape after extraction: {input_image_hr_for_disc.shape}"
+        )
+    else:
+        print(f"[DEBUG] Using input_image_hr as-is (ndim={input_image_hr.ndim})")
+
     # Initialize loss manager
     loss_manager = GANLossManager(
         loss_weights=loss_weights,
@@ -201,9 +303,20 @@ def train_gan_step(
                 noise_std=config.training.get("noise_std_gen", 0.0),
             )
 
-            # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)
-            gen_ensemble = gen_ensemble.unsqueeze(2)
-            pred_log = gen_ensemble[:, 0]  # First ensemble member for discriminator
+            # Extract first ensemble member for discriminator
+            # gen_ensemble is either (B, N, H, W) or (B, N, T, H, W)
+            pred_log = gen_ensemble[:, 0]  # (B, H, W) or (B, T, H, W)
+
+            # For temporal models, ensure we have 4D output (B, C, H, W) for discriminator
+            # If pred_log is (B, T, H, W), extract center timestep to get (B, 1, H, W)
+            if pred_log.ndim == 3:
+                pred_log = pred_log.unsqueeze(1)  # (B, H, W) -> (B, 1, H, W)
+            elif pred_log.ndim == 4 and config.data.get("t_past", 0) > 0:
+                # Temporal model: (B, T, H, W) -> extract center timestep
+                t_past = config.data.t_past
+                pred_log = pred_log[
+                    :, t_past : t_past + 1, :, :
+                ]  # (B, T, H, W) -> (B, 1, H, W)
 
             # Get discriminator output if using GAN loss
             disc_fake_output = None
@@ -216,15 +329,17 @@ def train_gan_step(
                 else:
                     pred_log_noisy = pred_log
                 if condition_separate_channels:
-                    disc_fake_output = discriminator(pred_log_noisy, input_image)
+                    disc_fake_output = discriminator(
+                        pred_log_noisy, input_image_hr_for_disc
+                    )
                 else:
                     disc_fake_output = discriminator(
-                        torch.cat((pred_log, input_image_hr), dim=1), timesteps
+                        torch.cat((pred_log, input_image_hr_for_disc), dim=1), timesteps
                     )
 
             # Compute combined loss using loss manager
             loss, loss_components = loss_manager.compute_generator_loss(
-                gen_ensemble=gen_ensemble.squeeze(2),  # Remove channel dim for loss
+                gen_ensemble=gen_ensemble,
                 target=target,
                 disc_fake_output=disc_fake_output,
             )
@@ -239,7 +354,7 @@ def train_gan_step(
         with torch.no_grad():
             if config.model.architecture == "spategan":
                 pred_log = generator(input_image).view(-1, 1, 128, 128)
-            elif config.model.architecture == "diffusion_unet":
+            elif config.model.architecture in ["diffusion_unet", "diffusion_unet_3d"]:
                 # Concatenate orography if available
                 if orography is not None:
                     input_with_oro = torch.cat([input_image_hr, orography], dim=1)
@@ -278,10 +393,15 @@ def train_gan_step(
             target_noisy = target
             pred_log_noisy = pred_log
 
+        print("[DEBUG] Before discriminator call:")
+        print(f"  target_noisy shape: {target_noisy.shape}")
+        print(f"  pred_log_noisy shape: {pred_log_noisy.shape}")
+        print(f"  input_image_hr_for_disc shape: {input_image_hr_for_disc.shape}")
+
         with amp.autocast("cuda"):
             # Get discriminator outputs for real and fake samples
-            disc_real_output = discriminator(target_noisy, input_image)
-            disc_fake_output = discriminator(pred_log_noisy, input_image)
+            disc_real_output = discriminator(target_noisy, input_image_hr_for_disc)
+            disc_fake_output = discriminator(pred_log_noisy, input_image_hr_for_disc)
 
             # Compute gradient penalty for regularization
             gp_weight = getattr(config.training, "gradient_penalty_weight", 10.0)
@@ -290,7 +410,7 @@ def train_gan_step(
                 gradient_penalty = compute_gradient_penalty_r1(
                     discriminator=discriminator,
                     real_data=target_noisy,
-                    condition=input_image,
+                    condition=input_image_hr_for_disc,
                 )
             else:
                 gradient_penalty = None
@@ -373,6 +493,14 @@ def test_gan_step(
     generator.eval()
     discriminator.eval()
 
+    # For temporal models (5D input_image_hr), extract center timestep for discriminator
+    input_image_hr_for_disc = input_image_hr
+    if input_image_hr.ndim == 5 and config.data.get("t_past", 0) > 0:
+        t_past = config.data.t_past
+        input_image_hr_for_disc = input_image_hr[
+            :, t_past, :, :, :
+        ]  # (B, T, C, H, W) -> (B, C, H, W)
+
     # Initialize loss manager
     loss_manager = GANLossManager(
         loss_weights=loss_weights,
@@ -396,9 +524,19 @@ def test_gan_step(
             noise_std=config.training.get("noise_std_gen", 0.0),
         )
 
-        # Add channel dimension for consistency (B, N, H, W) -> (B, N, 1, H, W)
-        gen_ensemble = gen_ensemble.unsqueeze(2)
-        pred_log = gen_ensemble[:, 0]  # First ensemble member for discriminator
+        # Extract first ensemble member for discriminator
+        # gen_ensemble is either (B, N, H, W) or (B, N, T, H, W)
+        pred_log = gen_ensemble[:, 0]  # (B, H, W) or (B, T, H, W)
+
+        # For temporal models, ensure we have 4D output (B, C, H, W) for discriminator
+        if pred_log.ndim == 3:
+            pred_log = pred_log.unsqueeze(1)  # (B, H, W) -> (B, 1, H, W)
+        elif pred_log.ndim == 4 and config.data.get("t_past", 0) > 0:
+            # Temporal model: (B, T, H, W) -> extract center timestep
+            t_past = config.data.t_past
+            pred_log = pred_log[
+                :, t_past : t_past + 1, :, :
+            ]  # (B, T, H, W) -> (B, 1, H, W)
 
         # Get discriminator outputs
         disc_fake_output = None
@@ -406,19 +544,19 @@ def test_gan_step(
 
         if loss_weights.get("gan", 0.0) > 0.0:
             if condition_separate_channels:
-                disc_fake_output = discriminator(pred_log, input_image)
-                disc_real_output = discriminator(target, input_image)
+                disc_fake_output = discriminator(pred_log, input_image_hr_for_disc)
+                disc_real_output = discriminator(target, input_image_hr_for_disc)
             else:
                 disc_fake_output = discriminator(
-                    torch.cat((pred_log, input_image_hr), dim=1), timesteps
+                    torch.cat((pred_log, input_image_hr_for_disc), dim=1), timesteps
                 )
                 disc_real_output = discriminator(
-                    torch.cat((target, input_image_hr), dim=1), timesteps
+                    torch.cat((target, input_image_hr_for_disc), dim=1), timesteps
                 )
 
         # Compute generator losses
         gen_total_loss, gen_loss_components = loss_manager.compute_generator_loss(
-            gen_ensemble=gen_ensemble.squeeze(2),  # Remove channel dim for loss
+            gen_ensemble=gen_ensemble,
             target=target,
             disc_fake_output=disc_fake_output,
         )

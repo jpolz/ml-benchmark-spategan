@@ -261,13 +261,38 @@ class EmulationTrainingDataset(Dataset):
         # Pre-compute time-to-index mapping for efficient temporal lookups
         if times is not None and (t_future > 0 or t_past > 0):
             self.time_to_idx = {t: i for i, t in enumerate(times)}
+            # Filter out samples that don't have complete temporal windows
+            self.valid_indices = self._compute_valid_indices()
         else:
             self.time_to_idx = None
+            self.valid_indices = None
+
+    def _compute_valid_indices(self):
+        """Find indices that have complete temporal windows."""
+        valid = []
+        for idx in range(len(self.times)):
+            t = self.times[idx]
+            # Check if all timesteps in window are available
+            has_all_timesteps = True
+            for tp in range(-self.t_past, self.t_future + 1):
+                t_offset = t + np.timedelta64(tp, "D")
+                if t_offset not in self.time_to_idx:
+                    has_all_timesteps = False
+                    break
+            if has_all_timesteps:
+                valid.append(idx)
+        return valid
 
     def __len__(self):
+        if self.valid_indices is not None:
+            return len(self.valid_indices)
         return len(self.x_data)
 
     def __getitem__(self, idx):
+        # Map to valid index if using temporal filtering
+        if self.valid_indices is not None:
+            idx = self.valid_indices[idx]
+
         if self.t_future == 0 and self.t_past == 0:
             x_sample, y_sample = self.x_data[idx, :], self.y_data[idx, :]
             if self.doy is not None:
@@ -277,7 +302,7 @@ class EmulationTrainingDataset(Dataset):
                 return x_sample, y_sample, doy_sample
             return x_sample, y_sample
         else:
-            # Get time of index and build temporal window
+            # Get time of index and build temporal window with padding
             t = self.times[idx]
             idxs = []
             for tp in range(-self.t_past, self.t_future + 1):
@@ -285,6 +310,14 @@ class EmulationTrainingDataset(Dataset):
                 idx_t = self.time_to_idx.get(t_offset)
                 if idx_t is not None:
                     idxs.append(idx_t)
+                else:
+                    # Pad with nearest available timestep (clamp to boundaries)
+                    if tp < 0:
+                        # Past timestep missing - use earliest available (idx itself or first)
+                        idxs.append(max(0, idx + tp) if idx + tp >= 0 else 0)
+                    else:
+                        # Future timestep missing - use latest available (idx itself or last)
+                        idxs.append(min(len(self.times) - 1, idx + tp))
             x_sample, y_sample = self.x_data[idxs, :], self.y_data[idxs, :]
             if self.doy is not None:
                 doy_sample = self.doy[idx]
@@ -359,7 +392,7 @@ class EmulationTestDataset(Dataset):
                 return x_sample, doy_sample
             return x_sample
         else:
-            # Get time of index and build temporal window
+            # Get time of index and build temporal window with padding
             t = self.times[idx]
             idxs = []
             for tp in range(-self.t_past, self.t_future + 1):
@@ -367,6 +400,14 @@ class EmulationTestDataset(Dataset):
                 idx_t = self.time_to_idx.get(t_offset)
                 if idx_t is not None:
                     idxs.append(idx_t)
+                else:
+                    # Pad with nearest available timestep (clamp to boundaries)
+                    if tp < 0:
+                        # Past timestep missing - use earliest available (idx itself or first)
+                        idxs.append(max(0, idx + tp) if idx + tp >= 0 else 0)
+                    else:
+                        # Future timestep missing - use latest available (idx itself or last)
+                        idxs.append(min(len(self.times) - 1, idx + tp))
             x_sample = self.x_data[idxs, :]
             if self.doy is not None:
                 doy_sample = self.doy[idx]

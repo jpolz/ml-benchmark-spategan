@@ -4,22 +4,22 @@ data:
   training_experiment: ESD_pseudo_reality # ESD_pseudo_reality or Emulator_hist_future
   data_path: /bg/fast/aihydromet/cordexbench/
   var_target: pr     # tasmax or pr 
-  normalization: "mp1p1_input_minmaxlog_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target" or "mp1p1_input_minmaxlog_target"
+  normalization: "mp1p1_input_m1p1log_target"   #'standardization', 'minmax', 'log', or None, or 'minus1_to_plus1' or "m1p1_log_target" or "mp1p1_input_m1p1log_target" or "mp1p1_input_minmaxlog_target"
   log_base: 10.0  # Base for log transform in log-based normalizations (default: e for natural log, use 10.0 for log10)
   num_workers: 4
-  t_past: 0  # number of past time steps as input
-  t_future: 0  # number of future time steps to predict
+  t_past: 3  # number of past time steps as input
+  t_future: 4  # number of future time steps to predict
   use_orography: false  # whether to include orography as additional static input
   use_doy: true  # whether to use day of year as timestep (replaces zero timestep with seasonal conditioning)
 
 # Training configuration
 training:
-  batch_size: 32
-  ensemble_size: 5
+  batch_size: 8
+  ensemble_size: 1
   noise_std_gen: 0.05  # standard deviation of Gaussian noise channel added to generator input (for diffusion unet)
   epochs: 200
   batches_per_epoch:       # set to null to use all data; otherwise set an integer value
-  batches_per_validation: 10  # set to null to use all data; otherwise set an integer value
+  batches_per_validation: 320  # set to null to use all data; otherwise set an integer value
   n_critic: 2  # number of discriminator updates per generator update
   gradient_penalty_weight: 0.0  # R1 gradient penalty weight for discriminator regularization (0.0 to disable, typical: 0.1-1.0)
   # Learning rate scheduler with warmup and exponential decay
@@ -61,28 +61,30 @@ training:
 
 # Model configuration
 model:
-  architecture: "diffusion_unet" # "diffusion_unet" or "spategan"
+  architecture: "diffusion_unet_3d" # "diffusion_unet", "diffusion_unet_3d" or "spategan"
   use_learnable_upsampler: false # Use learnable conv-based upsampling instead of fixed bilinear
   # Generator architecture configurations
   generator:
+    n_pred_steps: 1  # Optional: predict multiple future steps
+    n_context_steps: null  # Optional: limit past context used
     diffusion_unet:
       sample_size: [128, 128]
       in_channels: 16  # 15 input + 1 noise
       out_channels: 1
       layers_per_block: 1
       block_out_channels:
+      - 16
       - 32
       - 64
-      - 128
-      - 256
+      # - 128
       down_block_types:
       - "DownBlock2D"
       - "DownBlock2D"
-      - "DownBlock2D"
+      # - "DownBlock2D"
       - "AttnDownBlock2D"
       up_block_types:
       - "AttnUpBlock2D"
-      - "UpBlock2D"
+      # - "UpBlock2D"
       - "UpBlock2D"
       - "UpBlock2D"
     spategan:

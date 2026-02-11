@@ -265,7 +265,7 @@ class UNetWrapper(BaseWrapper):
                 x_hr = torch.cat([x_hr, orography_batch], dim=1)
 
             # Add noise channel for diffusion conditioning
-            x_with_noise = add_noise_channel(x_hr, noise_std=0.2)
+            x_with_noise = add_noise_channel(x_hr, noise_std=self.config.training.noise_std_gen)
 
             # Generate with timestep conditioning (timestep=0 for inference)
             timesteps = torch.zeros(x.shape[0], device=self.device)
